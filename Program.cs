@@ -1,19 +1,18 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression; 
 using System.Net;            
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using static System.Int32;
+
 
 // 设置当前目录为程序运行目录
 Directory.SetCurrentDirectory(AppContext.BaseDirectory);
@@ -944,7 +943,37 @@ async Task<string> InstallSkill(string? slug)
 
         sb.AppendLine("📦 正在解压技能文件...");
         if (Directory.Exists(targetFolder)) Directory.Delete(targetFolder, true);
-        ZipFile.ExtractToDirectory(zipPath, targetFolder);
+        Directory.CreateDirectory(targetFolder);
+
+        // --- 跨平台原生解压逻辑替代 System.IO.Compression ---
+        bool isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        using var p = new Process();
+        if (isWin)
+        {
+            // Windows 使用 PowerShell 原生解压
+            p.StartInfo = new ProcessStartInfo("powershell.exe", $"-NoProfile -NonInteractive -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{targetFolder}' -Force\"") { CreateNoWindow = true };
+        }
+        else
+        {
+            // Linux/macOS 使用原生 unzip 命令
+            p.StartInfo = new ProcessStartInfo("unzip", $"-o \"{zipPath}\" -d \"{targetFolder}\"") { CreateNoWindow = true };
+        }
+        
+        try 
+        {
+            p.Start();
+            p.WaitForExit();
+            if (p.ExitCode != 0) 
+            {
+                throw new Exception(isWin ? "PowerShell 解压失败。" : "unzip 命令执行失败。Linux 系统请确保已安装 unzip (如: sudo apt install unzip)。");
+            }
+        }
+        catch (Exception cmdEx)
+        {
+            throw new Exception($"调用系统底层解压失败: {cmdEx.Message}。请检查系统环境。");
+        }
+        // ---------------------------------------------------
+
         File.Delete(zipPath);
         sb.AppendLine("✅ 技能解压完成。");
 
@@ -962,6 +991,7 @@ async Task<string> InstallSkill(string? slug)
     sb.AppendLine("\n🎉 安装过程结束。");
     return sb.ToString().Replace("#", "");
 }
+
 
 async Task DownloadFileAsync(string url, string destinationPath)
 {
@@ -1552,29 +1582,57 @@ string GetWebUIHtml()
 }
 
 // ========================== 14. 通用日志压缩器 ==========================
-public partial class UniversalLogCompressor
+// ========================== 14. 通用日志压缩器 ==========================
+public class UniversalLogCompressor
 {
-    [GeneratedRegex(@"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")]
-    private static partial Regex AnsiEscapeRegex();
-
     public static List<string> CompressLogs(IEnumerable<string> rawLogs)
     {
         var compressedLogs = new List<string>(); var currentBlock = new List<string>();
         foreach (var rawLine in rawLogs)
         {
             if (string.IsNullOrWhiteSpace(rawLine)) continue;
-            string line = AnsiEscapeRegex().Replace(rawLine, "");
+            string line = StripAnsiFast(rawLine);
             if (currentBlock.Count == 0 || CalculateSimilarityFast(currentBlock.Last(), line) >= 0.7) { currentBlock.Add(line); }
             else { FlushBlock(compressedLogs, currentBlock); currentBlock.Clear(); currentBlock.Add(line); }
         }
         FlushBlock(compressedLogs, currentBlock); return compressedLogs;
     }
+
+    // 纯手工的高速有限状态机 ANSI 清洗器，完美替代体积庞大的 Regex 引擎
+    private static string StripAnsiFast(string input)
+    {
+        if (string.IsNullOrEmpty(input) || input.IndexOf('\x1B') == -1) return input;
+        var sb = new StringBuilder(input.Length);
+        for (int i = 0; i < input.Length; i++)
+        {
+            if (input[i] == '\x1B')
+            {
+                i++;
+                if (i >= input.Length) break;
+                char next = input[i];
+                if (next == '[' || next == '(' || next == ')') 
+                {
+                    while (i < input.Length - 1)
+                    {
+                        i++;
+                        char c = input[i];
+                        if (c >= '@' && c <= '~') break;
+                    }
+                }
+                continue;
+            }
+            sb.Append(input[i]);
+        }
+        return sb.ToString();
+    }
+
     private static void FlushBlock(List<string> result, List<string> block)
     {
         if (block.Count == 0) return;
         if (block.Count <= 3) result.AddRange(block);
         else { result.Add(block.First()); result.Add($"    ... [PiPiClaw 折叠了 {block.Count - 2} 行相似输出以节约 Token] ..."); result.Add(block.Last()); }
     }
+
     private static double CalculateSimilarityFast(string s, string t)
     {
         if (s == t) return 1.0; if (s.Length == 0 || t.Length == 0) return 0.0;
