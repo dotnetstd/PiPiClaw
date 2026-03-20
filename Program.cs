@@ -124,8 +124,8 @@ Console.ForegroundColor = ConsoleColor.Magenta;
 Console.WriteLine(@"
  ____   _  ____   _  ______  _               
 |  _ \ (_)|  _ \ (_)/  ____|| |              
-| |_) | _ | |_) | _ | |     | |    __ _ __      __
-|  __/ | ||  __/ | || |     | |   / _  |\ \ /\ / /
+| |_) | _ | |_) | _ | |     | |   __ _ __      __
+|  __/ | ||  __/ | || |     | |  / _  |\ \ /\ / /
 | |    | || |    | || |____ | | | (_| | \ V  V / 
 |_|    |_||_|    |_| \______|____\__,_|  \_/\_/  
 ");
@@ -1006,7 +1006,7 @@ async Task DownloadFileAsync(string url, string destinationPath)
 async Task StartWebManager()
 {
     var listener = new HttpListener();
-    listener.Prefixes.Add("http://localhost:5050/");
+    listener.Prefixes.Add("http://0.0.0.0:5050/");
     try
     {
         listener.Start();
