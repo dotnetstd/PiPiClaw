@@ -15,17 +15,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows x64 使用 UPX 压缩
-          - { rid: win-x64, os: windows-latest, ext: zip, exe: PiPiClaw.exe, use_upx: true }
-          # Windows ARM64 不使用 UPX (兼容性考虑)
-          - { rid: win-arm64, os: windows-latest, ext: zip, exe: PiPiClaw.exe, use_upx: false }
-          # Linux x64 使用 UPX
-          - { rid: linux-x64, os: ubuntu-latest, ext: tar.gz, exe: PiPiClaw, use_upx: true }
-          # Linux ARM64 (Ubuntu 24.04 ARM 原生环境)
+          # === Windows 阵营 ===
+          - { rid: win-x64,   os: windows-latest, ext: zip,    exe: PiPiClaw.exe, use_upx: true }
+          - { rid: win-x86,   os: windows-latest, ext: zip,    exe: PiPiClaw.exe, use_upx: true }
+          - { rid: win-arm64, os: windows-latest, ext: zip,    exe: PiPiClaw.exe, use_upx: false }
+
+          # === Linux 阵营 ===
+          - { rid: linux-x64,   os: ubuntu-latest,    ext: tar.gz, exe: PiPiClaw, use_upx: true }
+          # 使用 GitHub 原生 ARM64 环境，编译最快最稳
           - { rid: linux-arm64, os: ubuntu-24.04-arm, ext: tar.gz, exe: PiPiClaw, use_upx: false }
-          # macOS 系列通常不建议对 AOT 产物使用 UPX
-          - { rid: osx-x64, os: macos-latest, ext: tar.gz, exe: PiPiClaw, use_upx: false }
-          - { rid: osx-arm64, os: macos-latest, ext: tar.gz, exe: PiPiClaw, use_upx: false }
+          # 32位 ARM，需在 ubuntu-latest 上进行交叉编译
+          - { rid: linux-arm,   os: ubuntu-latest,    ext: tar.gz, exe: PiPiClaw, use_upx: false }
+
+          # === macOS 阵营 ===
+          # macOS 13 是最后一个默认 x86_64 的 runner，确保原生编译 Intel 版本
+          - { rid: osx-x64,   os: macos-13,       ext: tar.gz, exe: PiPiClaw, use_upx: false }
+          # macOS 14+ 默认是 M1/ARM64 runner
+          - { rid: osx-arm64, os: macos-latest,   ext: tar.gz, exe: PiPiClaw, use_upx: false }
 
     steps:
       - name: Checkout Code
@@ -36,14 +42,20 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install Dependencies (Linux)
+      - name: Install Dependencies (Linux General & Cross-Compile)
         if: startsWith(matrix.rid, 'linux')
         run: |
           sudo apt-get update
           sudo apt-get install -y clang zlib1g-dev build-essential 7zip
+          
+          # 针对 linux-arm (32位) 配置交叉编译工具链
+          if [ "${{ matrix.rid }}" == "linux-arm" ]; then
+            sudo dpkg --add-architecture armhf
+            sudo apt-get update
+            sudo apt-get install -y gcc-arm-linux-gnueabihf zlib1g-dev:armhf
+          fi
 
       - name: Build AOT
-        # 强制指定 bash 以兼容多行命令符 \
         shell: bash
         run: |
           dotnet publish -c Release \
@@ -53,7 +65,8 @@ jobs:
             -p:DebugType=none \
             -o ./publish_dir
 
-      - name: UPX Compression (x64 only)
+      - name: UPX Compression
+        # 仅对兼容性好的平台执行 UPX
         if: matrix.use_upx == true
         uses: svenstaro/upx-action@v2
         with:
@@ -65,19 +78,21 @@ jobs:
         shell: bash
         run: |
           cd ./publish_dir
-          # 清理调试符号文件
+          
+          # 清理可能残留的调试文件 (针对不同系统的后缀)
           rm -rf *.pdb *.dbg *.dsym
           
-          # 非 Windows 系统需要赋予执行权限
+          # Unix 系统赋予执行权限
           if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
             chmod +x ${{ matrix.exe }}
           fi
 
-          # 极致压缩打包
+          # 极致压缩打包逻辑
           if [ "${{ matrix.ext }}" == "zip" ]; then
+            # Windows 使用 7z 的最大压缩率打 zip 包
             7z a -tzip -mx=9 ../PiPiClaw_${{ matrix.rid }}.zip *
           else
-            # 先打包 tar 保持 Linux 权限，再用 7z 进行极致 gzip 压缩
+            # Linux/macOS 先用 tar 打包保留文件权限（非常重要），再通过管道用 7z 进行极致 gzip 压缩
             tar cf - * | 7z a -si -tgzip -mx=9 ../PiPiClaw_${{ matrix.rid }}.tar.gz
           fi
 
@@ -90,5 +105,4 @@ jobs:
           make_latest: true
           prerelease: false
           append_body: true
-          # 如果 tag 已存在则覆盖文件
           overwrite: true
