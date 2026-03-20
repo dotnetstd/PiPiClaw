@@ -1,4 +1,4 @@
-name: PiPiClaw AOT Build
+Name: PiPiClaw AOT Build
 
 on:
   workflow_dispatch:
@@ -47,14 +47,16 @@ jobs:
           
           # 针对 linux-arm (32位) 配置交叉编译工具链和正确的底层镜像源
           if [ "${{ matrix.rid }}" == "linux-arm" ]; then
-            # 1. 终极修复 404：将所有主源和第三方扩展源的 http/https 全局限定为 amd64/i386
-            sudo sed -i -E 's/^deb (http|https)/deb [arch=amd64,i386] \1/g' /etc/apt/sources.list
-            sudo sed -i -E 's/^deb (http|https)/deb [arch=amd64,i386] \1/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            # 1. 更强大的正则修复：捕获所有不包含 [arch=...] 标签的 deb 行
+            sudo sed -i -E 's/^deb[[:space:]]+([^\[])/deb [arch=amd64,i386] \1/g' /etc/apt/sources.list
+            sudo sed -i -E 's/^deb[[:space:]]+([^\[])/deb [arch=amd64,i386] \1/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
             
-            # 2. 写入 armhf 专属的 ports 源
+            # 2. 写入 armhf 专属的 ports 源 (补全 updates 和 security 防依赖版本断层)
             echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/armhf.list
+            echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/armhf.list
+            echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/armhf.list
             
-            # 3. 启用架构并安装
+            # 3. 启用架构并重新更新
             sudo dpkg --add-architecture armhf
             sudo apt-get update
             sudo apt-get install -y gcc-arm-linux-gnueabihf zlib1g-dev:armhf
