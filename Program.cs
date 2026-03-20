@@ -6,17 +6,30 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json.Nodes;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using static System.Int32;
 
 // 设置当前目录为程序运行目录
 Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+
+// 强制 Windows 控制台使用 UTF-8 编码 (替代庞大的 GBK Provider)
+if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+{
+    try
+    {
+        using var pChcp = Process.Start(new ProcessStartInfo("cmd.exe", "/c chcp 65001") { CreateNoWindow = true });
+        pChcp?.WaitForExit();
+    }
+    catch { }
+}
+Console.OutputEncoding = Encoding.UTF8;
+Console.InputEncoding = Encoding.UTF8;
 
 // 获取配置文件的函数
 string GetConfig(string key, string def = "")
@@ -27,9 +40,15 @@ string GetConfig(string key, string def = "")
     if (!File.Exists("appsettings.json")) return def;
     try
     {
-        var json = JsonNode.Parse(File.ReadAllText("appsettings.json"));
-        var jsonValue = json?[key]?.ToString();
-        if (jsonValue != null) return jsonValue;
+        var json = File.ReadAllText("appsettings.json", Encoding.UTF8);
+        var cfg = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppConfig);
+        if (cfg != null)
+        {
+            if (key == "ApiKey" && !string.IsNullOrEmpty(cfg.ApiKey)) return cfg.ApiKey;
+            if (key == "Model" && !string.IsNullOrEmpty(cfg.Model)) return cfg.Model;
+            if (key == "Endpoint" && !string.IsNullOrEmpty(cfg.Endpoint)) return cfg.Endpoint;
+            if (key == "SudoPassword" && cfg.SudoPassword != null) return cfg.SudoPassword;
+        }
     }
     catch { /* 忽略解析错误 */ }
     return def;
@@ -38,27 +57,21 @@ string GetConfig(string key, string def = "")
 // ========================== 1. 基础配置与初始化 ==========================
 if (!File.Exists("appsettings.json"))
 {
-    var defaultConfig = new JsonObject
+    var defaultConfig = new AppConfig
     {
-        ["ApiKey"] = "your_api_key_here",
-        ["Model"] = "qwen3.5-plus",
-        ["Endpoint"] = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        ["SudoPassword"] = "" // 新增：自动运维密码配置
+        ApiKey = "your_api_key_here",
+        Model = "qwen3.5-plus",
+        Endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        SudoPassword = ""
     };
-    var options = new JsonSerializerOptions { WriteIndented = true };
-    File.WriteAllText("appsettings.json", defaultConfig.ToJsonString(options), Encoding.UTF8);
+    File.WriteAllText("appsettings.json", JsonSerializer.Serialize(defaultConfig, AppJsonContext.Default.AppConfig), Encoding.UTF8);
     Console.ForegroundColor = ConsoleColor.Yellow;
     Console.WriteLine("检测到首次运行，已自动生成默认的 appsettings.json 文件。");
     Console.ResetColor();
 }
 
-// 注册字符编码提供程序以支持 GBK
-Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-Console.OutputEncoding = Encoding.UTF8;
-Console.InputEncoding = Encoding.UTF8;
-
 // ========================== 2. 初始化 Tools (大模型工具箱) ==========================
-var tools = JsonNode.Parse("""
+var toolsDoc = JsonDocument.Parse("""
 [
     { "type": "function", "function": { "name": "execute_command", "description": "执行终端命令", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } } },
     { "type": "function", "function": { "name": "read_file", "description": "读文件", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } } },
@@ -88,10 +101,10 @@ if (string.IsNullOrEmpty(apiKey) || apiKey.Contains("your"))
 
     try
     {
-        var json = JsonNode.Parse(File.ReadAllText("appsettings.json"))!.AsObject();
-        json["ApiKey"] = apiKey;
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText("appsettings.json", json.ToJsonString(options), Encoding.UTF8);
+        var cfgStr = File.ReadAllText("appsettings.json", Encoding.UTF8);
+        var cfg = JsonSerializer.Deserialize(cfgStr, AppJsonContext.Default.AppConfig) ?? new AppConfig();
+        cfg.ApiKey = apiKey;
+        File.WriteAllText("appsettings.json", JsonSerializer.Serialize(cfg, AppJsonContext.Default.AppConfig), Encoding.UTF8);
         
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine("✅ ApiKey 已自动保存到 appsettings.json，以后无需重复输入！\n");
@@ -134,7 +147,6 @@ Console.ResetColor();
 Console.WriteLine("---------------------------------------------------------------------------\n");
 
 // ========================== 4. Sudo 权限处理 ==========================
-// 优先从 appsettings.json 读取已保存的密码
 string sudoPassword = GetConfig("SudoPassword", "");
 bool isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 string sudoInstruction = isWin 
@@ -144,9 +156,8 @@ string sudoInstruction = isWin
 // ========================== 5. 核心状态变量与网络请求初始化 ==========================
 string checkpointPath = "pi_history.json"; 
 string tasksPath = "pi_scheduled_tasks.json"; 
-JsonArray fullHistory = new JsonArray();
+List<ChatMessage> fullHistory = new();
 
-// 初始化定时任务文件
 lock (tasksPath)
 {
     if (!File.Exists(tasksPath)) File.WriteAllText(tasksPath, "[]", Encoding.UTF8);
@@ -164,7 +175,7 @@ if (File.Exists(checkpointPath))
     {
         try
         {
-            var savedState = JsonNode.Parse(File.ReadAllText(checkpointPath))?.AsArray();
+            var savedState = JsonSerializer.Deserialize(File.ReadAllText(checkpointPath, Encoding.UTF8), AppJsonContext.Default.ListChatMessage);
             if (savedState != null) fullHistory = savedState;
             Console.WriteLine($"✅ 记忆已恢复！\n");
         }
@@ -180,38 +191,36 @@ using var client = new HttpClient();
 client.Timeout = TimeSpan.FromMinutes(10); 
 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-// Agent 并发锁，防止定时任务和用户输入冲突
 var agentLock = new SemaphoreSlim(1, 1);
 
 // ========================== 6. 启动后台服务 (调度 + WebUI) ==========================
 _ = Task.Run(ScheduleLoop);
-_ = Task.Run(StartWebManager); // 轻量级 Web 服务器
+_ = Task.Run(StartWebManager);
 
 // ========================== 7. 定时任务管理逻辑 ==========================
 string AddScheduledTask(string? execAtStr, string? intent, int intervalMinutes = 0)
 {
     if (!DateTimeOffset.TryParse(execAtStr, out var execTime))
-    {
         return "[添加失败] 时间格式解析错误，请使用 ISO 8601 格式，如 2026-03-20T15:30:00+08:00";
-    }
     if (execTime < DateTimeOffset.Now && intervalMinutes == 0)
-    {
         return $"[添加失败] 设定时间 {execTime:yyyy-MM-dd HH:mm:ss} 已过去，且不是周期任务。";
-    }
 
     lock (tasksPath)
     {
-        var tasks = JsonNode.Parse(File.ReadAllText(tasksPath, Encoding.UTF8))?.AsArray() ?? new JsonArray();
-        var newTask = new JsonObject
+        var tasks = new List<TaskItem>();
+        if (File.Exists(tasksPath)) {
+            try { tasks = JsonSerializer.Deserialize(File.ReadAllText(tasksPath, Encoding.UTF8), AppJsonContext.Default.ListTaskItem) ?? new(); } catch {}
+        }
+        var newTask = new TaskItem
         {
-            ["id"] = Guid.NewGuid().ToString("N"),
-            ["execute_at"] = execTime.ToString("o"),
-            ["user_intent"] = intent ?? "未提供具体意图",
-            ["status"] = "pending",
-            ["interval_minutes"] = intervalMinutes
+            Id = Guid.NewGuid().ToString("N"),
+            ExecuteAt = execTime.ToString("o"),
+            UserIntent = intent ?? "未提供具体意图",
+            Status = "pending",
+            IntervalMinutes = intervalMinutes
         };
         tasks.Add(newTask);
-        File.WriteAllText(tasksPath, tasks.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+        File.WriteAllText(tasksPath, JsonSerializer.Serialize(tasks, AppJsonContext.Default.ListTaskItem), Encoding.UTF8);
     }
     Console.ForegroundColor = ConsoleColor.Green;
     string loopStr = intervalMinutes > 0 ? $" [周期: 每 {intervalMinutes} 分钟执行]" : " [单次执行]";
@@ -226,14 +235,14 @@ string RemoveScheduledTask(string? taskId)
     lock (tasksPath)
     {
         if (!File.Exists(tasksPath)) return "[删除失败] 任务文件不存在";
-        var tasks = JsonNode.Parse(File.ReadAllText(tasksPath, Encoding.UTF8))?.AsArray();
-        if (tasks == null) return "[删除失败] 无法解析任务列表";
+        var tasks = new List<TaskItem>();
+        try { tasks = JsonSerializer.Deserialize(File.ReadAllText(tasksPath, Encoding.UTF8), AppJsonContext.Default.ListTaskItem) ?? new(); } catch {}
 
-        var targetNode = tasks.FirstOrDefault(t => t?["id"]?.ToString() == taskId);
+        var targetNode = tasks.FirstOrDefault(t => t.Id == taskId);
         if (targetNode != null)
         {
             tasks.Remove(targetNode);
-            File.WriteAllText(tasksPath, tasks.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+            File.WriteAllText(tasksPath, JsonSerializer.Serialize(tasks, AppJsonContext.Default.ListTaskItem), Encoding.UTF8);
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"\n[调度中心] 成功移除任务 (ID: {taskId})");
             Console.ResetColor();
@@ -249,18 +258,14 @@ void ShowPendingTasks()
     if (!File.Exists(tasksPath)) return;
     try
     {
-        JsonArray? tasks = null;
+        var tasks = new List<TaskItem>();
         lock (tasksPath)
         {
             var tasksStr = File.ReadAllText(tasksPath, Encoding.UTF8);
-            if (!string.IsNullOrWhiteSpace(tasksStr))
-            {
-                tasks = JsonNode.Parse(tasksStr)?.AsArray();
-            }
+            if (!string.IsNullOrWhiteSpace(tasksStr)) tasks = JsonSerializer.Deserialize(tasksStr, AppJsonContext.Default.ListTaskItem) ?? new();
         }
 
-        if (tasks == null) return;
-        var pendingTasks = tasks.Where(t => t?["status"]?.ToString() == "pending").ToList();
+        var pendingTasks = tasks.Where(t => t.Status == "pending").ToList();
 
         if (pendingTasks.Count > 0)
         {
@@ -270,12 +275,11 @@ void ShowPendingTasks()
             
             foreach (var t in pendingTasks)
             {
-                if (!DateTimeOffset.TryParse(t?["execute_at"]?.ToString(), out var execTime)) continue;
-                var intent = t?["user_intent"]?.ToString() ?? "未知";
+                if (!DateTimeOffset.TryParse(t.ExecuteAt, out var execTime)) continue;
+                var intent = string.IsNullOrEmpty(t.UserIntent) ? "未知" : t.UserIntent;
                 var diff = execTime - DateTimeOffset.Now;
 
-                int intervalMinutes = 0;
-                if (t?["interval_minutes"] != null) TryParse(t["interval_minutes"]?.ToString(), out intervalMinutes);
+                int intervalMinutes = t.IntervalMinutes;
                 string loopDisplay = intervalMinutes > 0 ? $" [周期:每{intervalMinutes}分]" : "";
 
                 bool isDelayed = diff.TotalHours < 2;
@@ -288,10 +292,7 @@ void ShowPendingTasks()
                     else if (diff.Hours > 0) timeDisplay = $"倒计时 {diff.Hours}小时{diff.Minutes}分{diff.Seconds}秒";
                     else timeDisplay = $"倒计时 {diff.Minutes}分{diff.Seconds}秒";
                 }
-                else
-                {
-                    timeDisplay = "即将触发执行...";
-                }
+                else timeDisplay = "即将触发执行...";
 
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.Write($" [{taskType}] ");
@@ -299,7 +300,7 @@ void ShowPendingTasks()
                 Console.WriteLine($"{execTime:MM-dd HH:mm:ss} ({timeDisplay}){loopDisplay}");
                     
                 Console.ForegroundColor = ConsoleColor.DarkYellow;
-                Console.WriteLine($"  └─ 需求: {intent} (ID: {t?["id"]})");
+                Console.WriteLine($"  └─ 需求: {intent} (ID: {t.Id})");
             }
             Console.ResetColor();
         }
@@ -325,7 +326,6 @@ while (true)
 return;
 
 // ========================== 10. 核心 Agent 处理逻辑 ==========================
-// 增加了 onUpdate 委托，用于实时将状态推送到前端流
 async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, Action<string, string>? onUpdate = null)
 {
     await agentLock.WaitAsync();
@@ -334,7 +334,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
     {
         var useFullContext = false; 
         var requireReset = false;   
-        var userMsg = new JsonObject { ["role"] = "user", ["content"] = inputMessage };
+        var userMsg = new ChatMessage { Role = "user", Content = inputMessage };
         
         fullHistory.Add(userMsg.DeepClone());
         SaveData(fullHistory, checkpointPath);
@@ -348,10 +348,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             var currentTasksJson = "暂无定时任务";
             if (File.Exists(tasksPath))
             {
-                lock (tasksPath)
-                {
-                    try { currentTasksJson = File.ReadAllText(tasksPath, Encoding.UTF8); } catch { }
-                }
+                lock (tasksPath) { try { currentTasksJson = File.ReadAllText(tasksPath, Encoding.UTF8); } catch { } }
             }
 
             var systemPromptText = $"""
@@ -369,12 +366,9 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                                     {GetInstalledSkillsContext()}
                                     """;
 
-            JsonArray payloadMessages =
-            [
-                new JsonObject { ["role"] = "system", ["content"] = systemPromptText }
-            ];
+            var payloadMessages = new List<ChatMessage> { new ChatMessage { Role = "system", Content = systemPromptText } };
 
-            IEnumerable<JsonNode?> recentMessages;
+            IEnumerable<ChatMessage> recentMessages;
             if (useFullContext)
             {
                 recentMessages = fullHistory;
@@ -385,7 +379,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                 var startIndex = 0;
                 for (var i = fullHistory.Count - 1; i >= 0; i--)
                 {
-                    if (fullHistory[i]?["role"]?.ToString() != "user") continue;
+                    if (fullHistory[i].Role != "user") continue;
                     seenUser++;
                     if (seenUser <= 3) continue;
                     startIndex = i + 1;
@@ -394,104 +388,81 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                 recentMessages = fullHistory.Skip(startIndex);
             }
 
-            foreach (var m in recentMessages) payloadMessages.Add(m!.DeepClone());
+            foreach (var m in recentMessages) payloadMessages.Add(m.DeepClone());
             
-            var payload = new JsonObject
+            var payload = new LlmRequest
             {
-                ["model"] = GetConfig("Model", "qwen3.5-plus"),
-                ["messages"] = payloadMessages,
-                ["tools"] = tools!.DeepClone(),
-                ["enable_search"] = true
+                Model = GetConfig("Model", "qwen3.5-plus"),
+                Messages = payloadMessages,
+                Tools = toolsDoc.RootElement,
+                EnableSearch = true
             };
             
-            var apiKeyToUse = GetConfig("ApiKey");
-            var endpointToUse = GetConfig("Endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
-
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKeyToUse);
-            var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", GetConfig("ApiKey"));
+            var content = new StringContent(JsonSerializer.Serialize(payload, AppJsonContext.Default.LlmRequest), Encoding.UTF8, "application/json");
             
             HttpResponseMessage res;
             try 
             { 
-                res = await client.PostAsync(endpointToUse, content); 
+                res = await client.PostAsync(GetConfig("Endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"), content); 
                 res.EnsureSuccessStatusCode();
             }
             catch(Exception ex) 
             { 
-                cts.Cancel(); 
-                await animTask; 
+                cts.Cancel(); await animTask; 
                 Console.ForegroundColor = ConsoleColor.Red;
                 var err = $"\n[网络错误] 请求 API 失败: {ex.Message}";
-                Console.WriteLine(err); 
-                Console.ResetColor();
+                Console.WriteLine(err); Console.ResetColor();
                 onUpdate?.Invoke("final", err);
                 return err; 
             }
             
             var responseString = await res.Content.ReadAsStringAsync();
-            var msg = JsonNode.Parse(responseString)?["choices"]?[0]?["message"];
+            var msg = JsonSerializer.Deserialize(responseString, AppJsonContext.Default.LlmResponse)?.Choices?.FirstOrDefault()?.Message;
             
-            cts.Cancel(); 
-            await animTask;
-            
+            cts.Cancel(); await animTask;
             if (msg == null) break;
             
             fullHistory.Add(msg.DeepClone());
             SaveData(fullHistory, checkpointPath);
             
-            var toolCalls = msg["tool_calls"]?.AsArray();
+            var toolCalls = msg.ToolCalls;
             if (toolCalls != null && toolCalls.Count > 0)
             {
                 foreach (var call in toolCalls)
                 {
-                    var fnName = call["function"]?["name"]?.ToString() ?? "";
-                    var argsString = call["function"]?["arguments"]?.ToString() ?? "{}";
-                    JsonNode? tempArgs = null;
-                    try { tempArgs = JsonNode.Parse(argsString); } catch { tempArgs = new JsonObject(); }
-                    
+                    var fnName = call.Function.Name;
+                    var argsString = call.Function.Arguments;
+                    JsonElement? tempArgs = null;
+                    try { tempArgs = JsonDocument.Parse(argsString).RootElement; } catch { }
+
+                    string GetStrProp(JsonElement? el, string key) {
+                        if (el.HasValue && el.Value.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String) return prop.GetString() ?? "";
+                        return "";
+                    }
+
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"\n[PiPiClaw 正在调用]: {fnName}");
                     Console.ResetColor();
                     
-                    // 构建给前端看的精简动作描述
                     string actionDesc = "";
                     Console.ForegroundColor = ConsoleColor.DarkCyan;
                     switch (fnName)
                     {
-                        case "execute_command":
-                            actionDesc = $"执行命令: {tempArgs?["command"]}";
-                            Console.WriteLine($"[Action] {actionDesc}");
-                            break;
-                        case "read_file":
-                            actionDesc = $"正在读取文件: {tempArgs?["file_path"]}";
-                            Console.WriteLine($"[Action] {actionDesc}");
-                            break;
-                        case "write_file":
-                            actionDesc = $"正在写入文件: {tempArgs?["file_path"]}";
-                            Console.WriteLine($"[Action] {actionDesc}");
-                            break;
-                        case "search_content":
-                            actionDesc = $"全局搜索关键字: {tempArgs?["keyword"]}";
-                            Console.WriteLine($"[Action] {actionDesc}");
-                            break;
-                        default:
-                            actionDesc = $"调用参数: {argsString}";
-                            break;
+                        case "execute_command": actionDesc = $"执行命令: {GetStrProp(tempArgs, "command")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "read_file": actionDesc = $"正在读取文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "write_file": actionDesc = $"正在写入文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "search_content": actionDesc = $"全局搜索关键字: {GetStrProp(tempArgs, "keyword")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        default: actionDesc = $"调用参数: {argsString}"; break;
                     }
                     Console.ResetColor();
-
-                    // 推送工具开始执行事件
                     onUpdate?.Invoke("tool", $"[调用工具] {fnName}\n{actionDesc}");
 
                     var result = "";
                     switch (fnName)
                     {
-                        case "search_skill":
-                            result = await SearchSkill(tempArgs?["query"]?.ToString());
-                            break;
-                        case "install_skill":
-                            result = await InstallSkill(tempArgs?["slug"]?.ToString());
-                            break;
+                        case "search_skill": result = await SearchSkill(GetStrProp(tempArgs, "query")); break;
+                        case "install_skill": result = await InstallSkill(GetStrProp(tempArgs, "slug")); break;
                         case "finish_task":
                             requireReset = true; 
                             result = "[系统提示] 上下文清理已预约，这将在你给出最后一句回复后执行。请现在用正常的自然语言向用户总结任务完成情况。";
@@ -501,39 +472,34 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                             break;
                         case "add_scheduled_task":
                         {
-                            var intervalMin = 0;
-                            if (tempArgs?["interval_minutes"] != null)
-                            {
-                                TryParse(tempArgs["interval_minutes"]?.ToString(), out intervalMin);
-                            }
-                            result = AddScheduledTask(tempArgs?["execute_at"]?.ToString(), tempArgs?["user_intent"]?.ToString(), intervalMin);
+                            int intervalMin = 0;
+                            if (tempArgs.HasValue && tempArgs.Value.TryGetProperty("interval_minutes", out var intProp) && intProp.ValueKind == JsonValueKind.Number)
+                                intervalMin = intProp.GetInt32();
+                            result = AddScheduledTask(GetStrProp(tempArgs, "execute_at"), GetStrProp(tempArgs, "user_intent"), intervalMin);
                             break;
                         }
-                        case "remove_scheduled_task":
-                            result = RemoveScheduledTask(tempArgs?["task_id"]?.ToString());
-                            break;
+                        case "remove_scheduled_task": result = RemoveScheduledTask(GetStrProp(tempArgs, "task_id")); break;
                         default:
                             result = fnName switch
                             {
-                                "execute_command" => RunCmd(tempArgs?["command"]?.ToString()),
-                                "read_file" => ReadFile(tempArgs?["file_path"]?.ToString()),
-                                "write_file" => WriteFile(tempArgs?["file_path"]?.ToString(), tempArgs?["content"]?.ToString(), tempArgs?["old_content"]?.ToString()),
-                                "read_local_image" => ReadImg(tempArgs?["file_path"]?.ToString()),
-                                "search_content" => SearchContent(tempArgs?["directory"]?.ToString(), tempArgs?["keyword"]?.ToString(), tempArgs?["file_pattern"]?.ToString()),
+                                "execute_command" => RunCmd(GetStrProp(tempArgs, "command")),
+                                "read_file" => ReadFile(GetStrProp(tempArgs, "file_path")),
+                                "write_file" => WriteFile(GetStrProp(tempArgs, "file_path"), GetStrProp(tempArgs, "content"), GetStrProp(tempArgs, "old_content")),
+                                "read_local_image" => ReadImg(GetStrProp(tempArgs, "file_path")),
+                                "search_content" => SearchContent(GetStrProp(tempArgs, "directory"), GetStrProp(tempArgs, "keyword"), GetStrProp(tempArgs, "file_pattern")),
                                 _ => "[未知工具] 系统不支持此工具。"
                             };
                             break;
                     }
                     
-                    // 推送工具执行结果
                     onUpdate?.Invoke("tool_result", result);
 
-                    var toolResultMsg = new JsonObject
+                    var toolResultMsg = new ChatMessage
                     {
-                        ["role"] = "tool",
-                        ["name"] = fnName,
-                        ["content"] = result,
-                        ["tool_call_id"] = call["id"]?.ToString()
+                        Role = "tool",
+                        Name = fnName,
+                        Content = result,
+                        ToolCallId = call.Id
                     };
                     fullHistory.Add(toolResultMsg.DeepClone());
                     SaveData(fullHistory, checkpointPath); 
@@ -541,11 +507,11 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             }
             else
             {
-                finalAIResponse = msg["content"]?.ToString() ?? "";
+                finalAIResponse = msg.Content ?? "";
                 Console.ResetColor();
                 Console.WriteLine($"\n{finalAIResponse}");
                 Console.ResetColor();
-                onUpdate?.Invoke("final", finalAIResponse); // 推送最终回答
+                onUpdate?.Invoke("final", finalAIResponse); 
                 isDone = true; 
             }
         }
@@ -583,106 +549,85 @@ async Task ScheduleLoop()
         {
             if (File.Exists(tasksPath))
             {
-                JsonArray? tasks = null;
+                var tasks = new List<TaskItem>();
                 lock (tasksPath)
                 {
                     try 
                     { 
                         var content = File.ReadAllText(tasksPath, Encoding.UTF8);
-                        if(!string.IsNullOrWhiteSpace(content)) tasks = JsonNode.Parse(content)?.AsArray(); 
+                        if(!string.IsNullOrWhiteSpace(content)) tasks = JsonSerializer.Deserialize(content, AppJsonContext.Default.ListTaskItem) ?? new(); 
                     } catch { }
                 }
 
                 bool modified = false;
-                if (tasks != null)
+                var pendingList = tasks.Where(t => t.Status == "pending").ToList();
+
+                foreach (var t in pendingList)
                 {
-                    var pendingList = tasks.Where(t => t?["status"]?.ToString() == "pending").ToList();
-
-                    foreach (var t in pendingList)
-                    {
-                        if (t == null || !DateTimeOffset.TryParse(t["execute_at"]?.ToString(), out var execTime)) continue;
-                        
-                        if (DateTimeOffset.Now < execTime) continue;
-                        
-                        t["status"] = "executing";
-                        modified = true;
-                        
-                        var intent = t["user_intent"]?.ToString() ?? "";
-                        var taskId = t["id"]?.ToString() ?? "";
-                                
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                Console.ForegroundColor = ConsoleColor.Magenta;
-                                Console.WriteLine($"\n\n[🔔 皮皮虾唤醒] 正在接管系统执行预定需求: {intent}");
-                                Console.ResetColor();
-                                        
-                                await RunAgent($"[系统级注入] 这是一个系统自动触发的定时任务。你之前设定了在此时执行该任务，用户的原始需求是：【{intent}】。请立刻处理，绝不要尝试手动重新添加定时任务，完成后调用 finish_task 结束。", true);
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine($"\n[定时任务执行异常] {ex.Message}");
-                                Console.ResetColor();
-                            }
-                            finally
-                            {
-                                lock (tasksPath)
-                                {
-                                    try
-                                    {
-                                        var currentTasks = JsonNode.Parse(File.ReadAllText(tasksPath, Encoding.UTF8))?.AsArray();
-                                        var taskToUpdate = currentTasks?.FirstOrDefault(x => x?["id"]?.ToString() == taskId);
-                                        
-                                        if (taskToUpdate != null)
-                                        {
-                                            int interval = 0;
-                                            if (taskToUpdate["interval_minutes"] != null)
-                                            {
-                                                TryParse(taskToUpdate["interval_minutes"]?.ToString(), out interval);
-                                            }
-
-                                            if (interval > 0)
-                                            {
-                                                DateTimeOffset nextTime;
-                                                if (DateTimeOffset.TryParse(taskToUpdate["execute_at"]?.ToString(), out var lastExecTime))
-                                                {
-                                                    nextTime = lastExecTime.AddMinutes(interval);
-                                                    while (nextTime <= DateTimeOffset.Now)
-                                                    {
-                                                        nextTime = nextTime.AddMinutes(interval);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    nextTime = DateTimeOffset.Now.AddMinutes(interval);
-                                                }
-
-                                                taskToUpdate["execute_at"] = nextTime.ToString("o");
-                                                taskToUpdate["status"] = "pending";
-                                            }
-                                            else
-                                            {
-                                                taskToUpdate["status"] = "done";
-                                            }
-                                            
-                                            File.WriteAllText(tasksPath, currentTasks?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
-                                        }
-                                    }
-                                    catch { /* 忽略并发报错 */ }
-                                }
-                            }
-                        });
-                    }
+                    if (!DateTimeOffset.TryParse(t.ExecuteAt, out var execTime)) continue;
+                    if (DateTimeOffset.Now < execTime) continue;
                     
-                    if (modified)
+                    t.Status = "executing";
+                    modified = true;
+                    
+                    var intent = t.UserIntent;
+                    var taskId = t.Id;
+                            
+                    _ = Task.Run(async () =>
                     {
-                        lock (tasksPath)
+                        try
                         {
-                            File.WriteAllText(tasksPath, tasks.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+                            Console.ForegroundColor = ConsoleColor.Magenta;
+                            Console.WriteLine($"\n\n[🔔 皮皮虾唤醒] 正在接管系统执行预定需求: {intent}");
+                            Console.ResetColor();
+                                    
+                            await RunAgent($"[系统级注入] 这是一个系统自动触发的定时任务。你之前设定了在此时执行该任务，用户的原始需求是：【{intent}】。请立刻处理，绝不要尝试手动重新添加定时任务，完成后调用 finish_task 结束。", true);
                         }
-                    }
+                        catch (Exception ex)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"\n[定时任务执行异常] {ex.Message}");
+                            Console.ResetColor();
+                        }
+                        finally
+                        {
+                            lock (tasksPath)
+                            {
+                                try
+                                {
+                                    var currentTasks = JsonSerializer.Deserialize(File.ReadAllText(tasksPath, Encoding.UTF8), AppJsonContext.Default.ListTaskItem) ?? new();
+                                    var taskToUpdate = currentTasks.FirstOrDefault(x => x.Id == taskId);
+                                    
+                                    if (taskToUpdate != null)
+                                    {
+                                        int interval = taskToUpdate.IntervalMinutes;
+                                        if (interval > 0)
+                                        {
+                                            DateTimeOffset nextTime;
+                                            if (DateTimeOffset.TryParse(taskToUpdate.ExecuteAt, out var lastExecTime))
+                                            {
+                                                nextTime = lastExecTime.AddMinutes(interval);
+                                                while (nextTime <= DateTimeOffset.Now) nextTime = nextTime.AddMinutes(interval);
+                                            }
+                                            else nextTime = DateTimeOffset.Now.AddMinutes(interval);
+
+                                            taskToUpdate.ExecuteAt = nextTime.ToString("o");
+                                            taskToUpdate.Status = "pending";
+                                        }
+                                        else taskToUpdate.Status = "done";
+                                        
+                                        File.WriteAllText(tasksPath, JsonSerializer.Serialize(currentTasks, AppJsonContext.Default.ListTaskItem), Encoding.UTF8);
+                                    }
+                                }
+                                catch { /* 忽略并发报错 */ }
+                            }
+                        }
+                    });
+                }
+                
+                if (modified)
+                {
+                    lock (tasksPath) { File.WriteAllText(tasksPath, JsonSerializer.Serialize(tasks, AppJsonContext.Default.ListTaskItem), Encoding.UTF8); }
                 }
             }
         }
@@ -693,7 +638,6 @@ async Task ScheduleLoop()
 }
 
 // ========================== 12. 工具函数封装区域 ==========================
-
 string GetInstalledSkillsContext()
 {
     var skillsDir = Path.Combine(AppContext.BaseDirectory, "skills");
@@ -705,9 +649,7 @@ string GetInstalledSkillsContext()
         var slug = new DirectoryInfo(dir).Name;
         var summaryPath = Path.Combine(dir, "summary.txt");
         var absolutePath = Path.GetFullPath(dir).Replace("\\", "/"); 
-        
         sb.AppendLine($"- [{slug}] 绝对路径目录: {absolutePath}");
-        
         if (File.Exists(summaryPath))
         {
             try 
@@ -739,9 +681,9 @@ async Task Think(CancellationToken ct)
     Console.CursorVisible = true;
 }
 
-void SaveData(JsonArray data, string path)
+void SaveData(List<ChatMessage> data, string path)
 {
-    try { File.WriteAllText(path, data.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8); } catch { }
+    try { File.WriteAllText(path, JsonSerializer.Serialize(data, AppJsonContext.Default.ListChatMessage), Encoding.UTF8); } catch { }
 }
 
 string ReadPasswordHidden()
@@ -768,7 +710,6 @@ string RunCmd(string? cmd)
     var isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
     var askPassPath = "";
     
-    // 如果发现是非 Windows 环境，且包含 sudo 命令，且尚未提供密码，则在此时按需拦截询问密码
     if (!isWin && cmd.Contains("sudo ") && !cmd.Contains("-S") && string.IsNullOrEmpty(sudoPassword))
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
@@ -791,11 +732,7 @@ string RunCmd(string? cmd)
                 {
                     chmodProc?.WaitForExit();
                 }
-
-                if (cmd.Contains("sudo ") && !cmd.Contains("-S"))
-                {
-                    cmd = cmd.Replace("sudo ", $"echo '{safePwd}' | sudo -S ");
-                }
+                if (cmd.Contains("sudo ") && !cmd.Contains("-S")) cmd = cmd.Replace("sudo ", $"echo '{safePwd}' | sudo -S ");
                 break;
             }
             case true when (cmd.Contains("sudo ") || cmd.Contains("runas ")): 
@@ -810,7 +747,7 @@ string RunCmd(string? cmd)
     Console.WriteLine($"[执行中] {cmd}");
     Console.ResetColor();
     
-    var consoleEncoding = isWin ? Encoding.GetEncoding("GBK") : new UTF8Encoding(false);
+    var consoleEncoding = new UTF8Encoding(false);
     using var p = new Process();
     p.StartInfo = new ProcessStartInfo(isWin ? "cmd.exe" : "/bin/bash", isWin ? $"/c {cmd}" : $"-c \"{cmd}\"")
     {
@@ -826,23 +763,12 @@ string RunCmd(string? cmd)
     
     var outputBuilder = new StringBuilder();
     var errorBuilder = new StringBuilder();
-    p.OutputDataReceived += (sender, e) =>
-    {
-        if (e.Data == null) return;
-        Console.WriteLine(e.Data); outputBuilder.AppendLine(e.Data);
-    };
-    p.ErrorDataReceived += (sender, e) =>
-    {
-        if (e.Data == null) return;
-        Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(e.Data); Console.ResetColor(); errorBuilder.AppendLine(e.Data);
-    };
+    p.OutputDataReceived += (sender, e) => { if (e.Data == null) return; Console.WriteLine(e.Data); outputBuilder.AppendLine(e.Data); };
+    p.ErrorDataReceived += (sender, e) => { if (e.Data == null) return; Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(e.Data); Console.ResetColor(); errorBuilder.AppendLine(e.Data); };
     
     try
     {
-        p.Start();
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
-        p.WaitForExit();
+        p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); p.WaitForExit();
     }
     catch (Exception ex) { return $"[执行异常] {ex.Message}"; }
     finally { if (!string.IsNullOrEmpty(askPassPath) && File.Exists(askPassPath)) try { File.Delete(askPassPath); } catch { } }
@@ -854,9 +780,7 @@ string RunCmd(string? cmd)
     var finalErr = string.Join("\n", compressedErr).Trim();
     var finalOut = string.Join("\n", compressedOut).Trim();
 
-    return !string.IsNullOrWhiteSpace(finalErr) 
-        ? $"[标准错误/进度信息]\n{finalErr}\n[标准输出]\n{finalOut}" 
-        : finalOut;
+    return !string.IsNullOrWhiteSpace(finalErr) ? $"[标准错误/进度信息]\n{finalErr}\n[标准输出]\n{finalOut}" : finalOut;
 }
 
 string ReadFile(string? path)
@@ -899,16 +823,9 @@ string WriteFile(string? path, string? content, string? oldContent = null)
 string ReadTextSmart(string path, out Encoding detectedEncoding)
 {
     var bytes = File.ReadAllBytes(path);
-    try 
-    { 
-        detectedEncoding = new UTF8Encoding(false, true); 
-        return detectedEncoding.GetString(bytes); 
-    }
-    catch 
-    { 
-        detectedEncoding = Encoding.GetEncoding("GBK"); 
-        return detectedEncoding.GetString(bytes); 
-    }
+    detectedEncoding = new UTF8Encoding(false, true); 
+    try { return detectedEncoding.GetString(bytes); }
+    catch { detectedEncoding = new UTF8Encoding(false); return Encoding.UTF8.GetString(bytes); }
 }
 
 string ReadImg(string? path)
@@ -1104,14 +1021,14 @@ async Task StartWebManager()
             }
             else if (req.Url.AbsolutePath == "/api/config" && req.HttpMethod == "GET")
             {
-                var cfg = new JsonObject
+                var cfg = new AppConfig
                 {
-                    ["ApiKey"] = GetConfig("ApiKey"),
-                    ["Model"] = GetConfig("Model", "qwen3.5-plus"),
-                    ["Endpoint"] = GetConfig("Endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
-                    ["SudoPassword"] = GetConfig("SudoPassword", "") // 新增
+                    ApiKey = GetConfig("ApiKey"),
+                    Model = GetConfig("Model", "qwen3.5-plus"),
+                    Endpoint = GetConfig("Endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
+                    SudoPassword = GetConfig("SudoPassword", "")
                 };
-                byte[] buffer = Encoding.UTF8.GetBytes(cfg.ToJsonString());
+                byte[] buffer = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(cfg, AppJsonContext.Default.AppConfig));
                 res.ContentType = "application/json";
                 await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
                 res.Close();
@@ -1120,16 +1037,11 @@ async Task StartWebManager()
             {
                 using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
                 var body = await reader.ReadToEndAsync();
-                var newCfg = JsonNode.Parse(body)?.AsObject();
+                var newCfg = JsonSerializer.Deserialize(body, AppJsonContext.Default.AppConfig);
                 if (newCfg != null)
                 {
-                    var options = new JsonSerializerOptions { WriteIndented = true };
-                    File.WriteAllText("appsettings.json", newCfg.ToJsonString(options), Encoding.UTF8);
-                    
-                    // 实时刷新内存中的 SudoPassword
-                    if (newCfg.ContainsKey("SudoPassword")) {
-                        sudoPassword = newCfg["SudoPassword"]?.ToString() ?? "";
-                    }
+                    File.WriteAllText("appsettings.json", JsonSerializer.Serialize(newCfg, AppJsonContext.Default.AppConfig), Encoding.UTF8);
+                    sudoPassword = newCfg.SudoPassword ?? "";
                 }
                 res.StatusCode = 200;
                 res.Close();
@@ -1149,28 +1061,23 @@ async Task StartWebManager()
             {
                 using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
                 var body = await reader.ReadToEndAsync();
-                var inputMsg = JsonNode.Parse(body)?["message"]?.ToString();
+                var inputMsg = JsonSerializer.Deserialize(body, AppJsonContext.Default.ChatReq)?.Message;
                 
-                // 设置为流式响应格式
                 res.ContentType = "text/plain; charset=utf-8";
                 res.SendChunked = true;
                 using var writer = new StreamWriter(res.OutputStream, new UTF8Encoding(false));
                 writer.AutoFlush = true;
 
-                // 回调函数，用于实时推流数据到前端
                 Action<string, string> onUpdate = (type, content) =>
                 {
                     try {
-                        var jsonNode = new JsonObject { ["type"] = type, ["content"] = content };
-                        writer.Write(jsonNode.ToJsonString() + "|||END|||");
+                        var pushMsg = new PushMsg { Type = type, Content = content };
+                        writer.Write(JsonSerializer.Serialize(pushMsg, AppJsonContext.Default.PushMsg) + "|||END|||");
                         writer.Flush();
-                    } catch { /* 客户端主动断开则忽略异常 */ }
+                    } catch { }
                 };
 
-                if (!string.IsNullOrEmpty(inputMsg))
-                {
-                    await RunAgent(inputMsg, false, onUpdate);
-                }
+                if (!string.IsNullOrEmpty(inputMsg)) await RunAgent(inputMsg, false, onUpdate);
                 res.Close();
             }
             else
@@ -1179,7 +1086,7 @@ async Task StartWebManager()
                 res.Close();
             }
         }
-        catch { /* 忽略连接断开等异常 */ }
+        catch { }
     }
 }
 
@@ -1643,16 +1550,20 @@ string GetWebUIHtml()
            </html>
            """;
 }
+
 // ========================== 14. 通用日志压缩器 ==========================
-public class UniversalLogCompressor
+public partial class UniversalLogCompressor
 {
+    [GeneratedRegex(@"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")]
+    private static partial Regex AnsiEscapeRegex();
+
     public static List<string> CompressLogs(IEnumerable<string> rawLogs)
     {
         var compressedLogs = new List<string>(); var currentBlock = new List<string>();
         foreach (var rawLine in rawLogs)
         {
             if (string.IsNullOrWhiteSpace(rawLine)) continue;
-            string line = Regex.Replace(rawLine, @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "");
+            string line = AnsiEscapeRegex().Replace(rawLine, "");
             if (currentBlock.Count == 0 || CalculateSimilarityFast(currentBlock.Last(), line) >= 0.7) { currentBlock.Add(line); }
             else { FlushBlock(compressedLogs, currentBlock); currentBlock.Clear(); currentBlock.Add(line); }
         }
@@ -1678,3 +1589,79 @@ public class UniversalLogCompressor
         return 1.0 - ((double)v1[t.Length] / max);
     }
 }
+
+// ========================== 16. AOT Source Generator 实体类定义 ==========================
+public class AppConfig {
+    [JsonPropertyName("ApiKey")] public string ApiKey { get; set; } = "";
+    [JsonPropertyName("Model")] public string Model { get; set; } = "";
+    [JsonPropertyName("Endpoint")] public string Endpoint { get; set; } = "";
+    [JsonPropertyName("SudoPassword")] public string SudoPassword { get; set; } = "";
+}
+
+public class TaskItem {
+    [JsonPropertyName("id")] public string Id { get; set; } = "";
+    [JsonPropertyName("execute_at")] public string ExecuteAt { get; set; } = "";
+    [JsonPropertyName("user_intent")] public string UserIntent { get; set; } = "";
+    [JsonPropertyName("status")] public string Status { get; set; } = "";
+    [JsonPropertyName("interval_minutes")] public int IntervalMinutes { get; set; } = 0;
+}
+
+public class ChatMessage {
+    [JsonPropertyName("role")] public string Role { get; set; } = "";
+    [JsonPropertyName("content")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Content { get; set; }
+    [JsonPropertyName("name")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Name { get; set; }
+    [JsonPropertyName("tool_call_id")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ToolCallId { get; set; }
+    [JsonPropertyName("tool_calls")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<ToolCall>? ToolCalls { get; set; }
+
+    public ChatMessage DeepClone() {
+        return JsonSerializer.Deserialize(JsonSerializer.Serialize(this, AppJsonContext.Default.ChatMessage), AppJsonContext.Default.ChatMessage) ?? new ChatMessage();
+    }
+}
+
+public class ToolCall {
+    [JsonPropertyName("id")] public string Id { get; set; } = "";
+    [JsonPropertyName("type")] public string Type { get; set; } = "function";
+    [JsonPropertyName("function")] public ToolFunction Function { get; set; } = new();
+}
+
+public class ToolFunction {
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("arguments")] public string Arguments { get; set; } = "";
+}
+
+public class LlmRequest {
+    [JsonPropertyName("model")] public string Model { get; set; } = "";
+    [JsonPropertyName("messages")] public List<ChatMessage> Messages { get; set; } = new();
+    [JsonPropertyName("tools")] public JsonElement Tools { get; set; }
+    [JsonPropertyName("enable_search")] public bool EnableSearch { get; set; }
+}
+
+public class LlmResponse {
+    [JsonPropertyName("choices")] public List<LlmChoice>? Choices { get; set; }
+}
+
+public class LlmChoice {
+    [JsonPropertyName("message")] public ChatMessage? Message { get; set; }
+}
+
+public class ChatReq {
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+}
+
+public class PushMsg {
+    [JsonPropertyName("type")] public string Type { get; set; } = "";
+    [JsonPropertyName("content")] public string Content { get; set; } = "";
+}
+
+// 这是 AOT 极限压缩的核心上下文注册：
+[JsonSerializable(typeof(AppConfig))]
+[JsonSerializable(typeof(List<TaskItem>))]
+[JsonSerializable(typeof(TaskItem))]
+[JsonSerializable(typeof(List<ChatMessage>))]
+[JsonSerializable(typeof(ChatMessage))]
+[JsonSerializable(typeof(LlmRequest))]
+[JsonSerializable(typeof(LlmResponse))]
+[JsonSerializable(typeof(ChatReq))]
+[JsonSerializable(typeof(PushMsg))]
+[JsonSourceGenerationOptions(WriteIndented = true)]
+internal partial class AppJsonContext : JsonSerializerContext {}
