@@ -404,7 +404,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             }
 
             var systemPromptText = $"""
-                                    你是一个高级运维自动化 Agent，代号 PiPiClaw (皮皮虾)。当前系统：{RuntimeInformation.OSDescription}。
+                                    你是一个高级运维自动化 Agent，代号 PiPiClaw (皮皮虾)。当前系统：{RuntimeInformation.OSDescription}。当前时间是 {DateTimeOffset.Now:yyyy-MM-ddTHH:mm:sszzz}。
                                     {sudoInstruction}
                                     【记忆管理架构】：
                                     1. 为节省Token，你的短时记忆默认只保留最近几次的对话记录。
