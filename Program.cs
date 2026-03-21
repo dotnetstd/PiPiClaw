@@ -1516,7 +1516,7 @@ string GetWebUIHtml()
 
     .container{width:100%; max-width:1000px; z-index:2; display:flex; flex-direction:column; gap:20px;}
 
-    .header{text-align:center; animation:slideDown .8s ease-out;}
+    .header{display:flex; align-items:center; justify-content:space-between; animation:slideDown .8s ease-out; gap:12px;}
     .header h1{
       font-size:3em;
       font-weight:900;
@@ -1533,35 +1533,40 @@ string GetWebUIHtml()
       align-items:center;
       gap:12px;
       justify-content:center;
+      flex:1;
+      text-align:center;
     }
     .header p{color:var(--text-muted); font-size:.9em; margin-top:6px; opacity:.85; letter-spacing:1px;}
+    .header-btn{
+      background:var(--bg-card);
+      border:1px solid var(--chat-box-border);
+      color:var(--text-main);
+      width:44px;
+      height:44px;
+      border-radius:50%;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:1.1em;
+      font-weight:700;
+      transition:all 0.3s ease;
+      flex-shrink:0;
+      box-shadow:0 4px 10px var(--shadow-color);
+      backdrop-filter:blur(10px);
+      letter-spacing:0;
+    }
+    .header-btn:hover{
+      transform:scale(1.1);
+      box-shadow:0 6px 15px var(--shadow-color-hover);
+      border-color:var(--pipi-cyan);
+    }
 
     /* === 主题切换按钮 === */
     .theme-toggle {
-      position: absolute;
-      top: 20px;
-      right: 20px;
-      background: var(--bg-card);
-      border: 1px solid var(--chat-box-border);
-      color: var(--text-main);
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       font-size: 1.3em;
-      transition: all 0.3s ease;
-      z-index: 9999;
-      box-shadow: 0 4px 10px var(--shadow-color);
-      backdrop-filter: blur(10px);
     }
-    .theme-toggle:hover {
-      transform: scale(1.1);
-      box-shadow: 0 6px 15px var(--shadow-color-hover);
-      border-color: var(--pipi-cyan);
-    }
+    .collapse-toggle[aria-expanded="true"]{border-color:var(--pipi-cyan); color:var(--pipi-cyan); box-shadow:0 0 10px rgba(0,242,254,.2);}
 
     .box{
       background:var(--bg-card);
@@ -1608,18 +1613,9 @@ string GetWebUIHtml()
 
     .collapsible .collapse-header{display:flex;align-items:center;justify-content:space-between;gap:12px;}
     .collapse-toggle{
-      background:transparent;
-      color:var(--pipi-cyan);
-      border:1px solid var(--pipi-cyan);
-      padding:8px 12px;
-      border-radius:8px;
-      cursor:pointer;
-      font-weight:700;
-      letter-spacing:1px;
-      transition:all .2s;
       user-select:none;
     }
-    .collapse-toggle:hover{background:rgba(0,242,254,.1); box-shadow:0 0 12px rgba(0,242,254,.25);}
+    .collapse-toggle:hover{box-shadow:0 0 12px rgba(0,242,254,.25);}
     .collapse-body{margin-top:15px;}
     .collapsible.collapsed .collapse-body{display:none;}
 
@@ -1828,13 +1824,13 @@ string GetWebUIHtml()
     @media (max-width:600px){
       :root{font-size:15px;}
       body{padding:10px;}
-      .header h1{font-size:1.6em; letter-spacing:1.5px;}
+      .header h1{font-size:1.4em; letter-spacing:1px;}
+      .header-btn{width:38px; height:38px; font-size:1em;}
       .box{padding:15px;}
       .chat-box{height:58vh; padding:12px;}
       #qrcode-container{display:none;}
       .btn-wrapper{width:60px;}
       textarea{padding:10px; font-size:.95em;}
-      .theme-toggle { top: 10px; right: 10px; width: 38px; height: 38px; font-size: 1.1em; }
     }
 
     @keyframes slideUp{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:translateY(0)}}
@@ -1876,10 +1872,6 @@ string GetWebUIHtml()
 </head>
 
 <body>
-  <button class="theme-toggle" onclick="toggleTheme()" aria-label="切换主题" title="切换深/浅色主题">
-    <span id="theme-icon">🌙</span>
-  </button>
-
   <div id="qrcode-container" title="手机扫码中控">
     <div id="qrcode"></div>
     <span>手机扫码打开这个界面</span>
@@ -1887,16 +1879,19 @@ string GetWebUIHtml()
 
   <div class="container">
     <div class="header">
+      <button type="button" class="header-btn collapse-toggle" id="configToggle" onclick="toggleConfig()" aria-expanded="true" title="展开/收起设置">⚙</button>
       <h1>
         <img class="logo-mark" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="PiPiClaw Logo" />
         <span>PiPiClaw</span>
       </h1>
+      <button class="header-btn theme-toggle" onclick="toggleTheme()" aria-label="切换主题" title="切换深/浅色主题">
+        <span id="theme-icon">🌙</span>
+      </button>
     </div>
 
     <div class="box collapsible" id="configBox" style="animation-delay:.1s;">
       <div class="collapse-header">
         <h2><span style="color:var(--pipi-cyan);">🛰️</span> 核心链路配置 (Config)</h2>
-        <button type="button" class="collapse-toggle" id="configToggle" onclick="toggleConfig()" aria-expanded="true">收起设置 ▾</button>
       </div>
 
       <div class="collapse-body" id="configBody">
@@ -2025,12 +2020,12 @@ string GetWebUIHtml()
       if (!configBox || !configBody || !configToggle) return;
       if (collapsed) {
         configBox.classList.add('collapsed');
-        configToggle.innerText = '展开设置 ▸';
         configToggle.setAttribute('aria-expanded', 'false');
+        configToggle.title = '展开设置';
       } else {
         configBox.classList.remove('collapsed');
-        configToggle.innerText = '收起设置 ▾';
         configToggle.setAttribute('aria-expanded', 'true');
+        configToggle.title = '收起设置';
       }
     }
 
