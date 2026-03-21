@@ -73,7 +73,7 @@ if (!File.Exists("appsettings.json"))
 // ========================== 2. 初始化 Tools (大模型工具箱) ==========================
 var toolsDoc = JsonDocument.Parse("""
 [
-    { "type": "function", "function": { "name": "execute_command", "description": "执行终端命令", "parameters": { "type": "object", "properties": { "command": { "type": "string" }, "is_background": { "type": "boolean", "description": "是否后台运行。如果命令是启动服务器、长时运行的阻塞脚本、死循环等，请务必设为 true；如果是需要立即获取输出结果的普通命令，请设为 false。" } }, "required": ["command"] } } }, "required": ["command"] } } },
+    { "type": "function", "function": { "name": "execute_command", "description": "执行终端命令", "parameters": { "type": "object", "properties": { "command": { "type": "string" }, "is_background": { "type": "boolean", "description": "是否后台运行。如果命令是启动服务器、长时运行的阻塞脚本、死循环等，请务必设为 true；如果是需要立即获取输出结果的普通命令，请设为 false。" } }, "required": ["command"] } } },
     { "type": "function", "function": { "name": "read_file", "description": "读文件", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } } },
     { "type": "function", "function": { "name": "write_file", "description": "写文件或局部修改文件。局部修改必须提供 old_content。", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" }, "content": { "type": "string" }, "old_content": { "type": "string" } }, "required": ["file_path", "content"] } } },
     { "type": "function", "function": { "name": "read_local_image", "description": "看图（读取本地图片为 base64）", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } } },
