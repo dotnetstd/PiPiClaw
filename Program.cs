@@ -73,7 +73,7 @@ if (!File.Exists("appsettings.json"))
 // ========================== 2. 初始化 Tools (大模型工具箱) ==========================
 var toolsDoc = JsonDocument.Parse("""
 [
-    { "type": "function", "function": { "name": "execute_command", "description": "执行终端命令", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } } },
+    { "type": "function", "function": { "name": "execute_command", "description": "执行终端命令", "parameters": { "type": "object", "properties": { "command": { "type": "string" }, "is_background": { "type": "boolean", "description": "是否后台运行。如果命令是启动服务器、长时运行的阻塞脚本、死循环等，请务必设为 true；如果是需要立即获取输出结果的普通命令，请设为 false。" } }, "required": ["command"] } } }, "required": ["command"] } } },
     { "type": "function", "function": { "name": "read_file", "description": "读文件", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } } },
     { "type": "function", "function": { "name": "write_file", "description": "写文件或局部修改文件。局部修改必须提供 old_content。", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" }, "content": { "type": "string" }, "old_content": { "type": "string" } }, "required": ["file_path", "content"] } } },
     { "type": "function", "function": { "name": "read_local_image", "description": "看图（读取本地图片为 base64）", "parameters": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } } },
@@ -492,7 +492,10 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                         if (el.HasValue && el.Value.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String) return prop.GetString() ?? "";
                         return "";
                     }
-
+                    bool GetBoolProp(JsonElement? el, string key) {
+                        if (el.HasValue && el.Value.TryGetProperty(key, out var prop) && (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False)) return prop.GetBoolean();
+                        return false;
+                    }
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"\n[PiPiClaw 正在调用]: {fnName}");
                     Console.ResetColor();
@@ -501,7 +504,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                     Console.ForegroundColor = ConsoleColor.DarkCyan;
                     switch (fnName)
                     {
-                        case "execute_command": actionDesc = $"执行命令: {GetStrProp(tempArgs, "command")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "execute_command": actionDesc = $"执行命令: {GetStrProp(tempArgs, "command")} (后台: {GetBoolProp(tempArgs, "is_background")})"; Console.WriteLine($"[Action] {actionDesc}"); break;
                         case "read_file": actionDesc = $"正在读取文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
                         case "write_file": actionDesc = $"正在写入文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
                         case "search_content": actionDesc = $"全局搜索关键字: {GetStrProp(tempArgs, "keyword")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
@@ -534,7 +537,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                         default:
                             result = fnName switch
                             {
-                                "execute_command" => RunCmd(GetStrProp(tempArgs, "command")),
+                                "execute_command" => RunCmd(GetStrProp(tempArgs, "command"), GetBoolProp(tempArgs, "is_background")),
                                 "read_file" => ReadFile(GetStrProp(tempArgs, "file_path")),
                                 "write_file" => WriteFile(GetStrProp(tempArgs, "file_path"), GetStrProp(tempArgs, "content"), GetStrProp(tempArgs, "old_content")),
                                 "read_local_image" => ReadImg(GetStrProp(tempArgs, "file_path")),
@@ -756,7 +759,7 @@ string ReadPasswordHidden()
     return pwd.ToString();
 }
 
-string RunCmd(string? cmd)
+string RunCmd(string? cmd, bool isBackground = false)
 {
     if (string.IsNullOrEmpty(cmd)) return "[执行失败] 命令为空";
     var isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -796,43 +799,75 @@ string RunCmd(string? cmd)
     }
     
     Console.ForegroundColor = ConsoleColor.DarkGray;
-    Console.WriteLine($"[执行中] {cmd}");
+    Console.WriteLine($"[{(isBackground ? "后台异步执行中" : "同步执行中")}] {cmd}");
     Console.ResetColor();
-    
-    var consoleEncoding = new UTF8Encoding(false);
-    using var p = new Process();
-    p.StartInfo = new ProcessStartInfo(isWin ? "cmd.exe" : "/bin/bash", isWin ? $"/c {cmd}" : $"-c \"{cmd}\"")
-    {
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        CreateNoWindow = true,
-        StandardOutputEncoding = consoleEncoding,
-        StandardErrorEncoding = consoleEncoding
-    };
 
-    if (!isWin && !string.IsNullOrEmpty(askPassPath)) p.StartInfo.EnvironmentVariables["SUDO_ASKPASS"] = askPassPath;
-    
-    var outputBuilder = new StringBuilder();
-    var errorBuilder = new StringBuilder();
-    p.OutputDataReceived += (sender, e) => { if (e.Data == null) return; Console.WriteLine(e.Data); outputBuilder.AppendLine(e.Data); };
-    p.ErrorDataReceived += (sender, e) => { if (e.Data == null) return; Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(e.Data); Console.ResetColor(); errorBuilder.AppendLine(e.Data); };
-    
-    try
+    if (isBackground)
     {
-        p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); p.WaitForExit();
+        // ================= 后台非阻塞模式 =================
+        // 丢入 Task.Run 剥离出主线程，大模型不会被卡死
+        Task.Run(() =>
+        {
+            var consoleEncoding = new UTF8Encoding(false);
+            using var p = new Process();
+            p.StartInfo = new ProcessStartInfo(isWin ? "cmd.exe" : "/bin/bash", isWin ? $"/c {cmd}" : $"-c \"{cmd}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = consoleEncoding,
+                StandardErrorEncoding = consoleEncoding
+            };
+
+            if (!isWin && !string.IsNullOrEmpty(askPassPath)) p.StartInfo.EnvironmentVariables["SUDO_ASKPASS"] = askPassPath;
+            
+            // 后台任务的输出直接打印到控制台，不返回给大模型
+            p.OutputDataReceived += (sender, e) => { if (e.Data != null) Console.WriteLine($"[后台] {e.Data}"); };
+            p.ErrorDataReceived += (sender, e) => { if (e.Data != null) { Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine($"[后台警告] {e.Data}"); Console.ResetColor(); } };
+            
+            try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); p.WaitForExit(); } catch { }
+            finally { if (!string.IsNullOrEmpty(askPassPath) && File.Exists(askPassPath)) try { File.Delete(askPassPath); } catch { } }
+        });
+
+        // 立即返回给大模型，解除阻塞
+        return $"[已转入后台运行] 进程已在后台剥离启动: {cmd}。因为是后台任务，所以你将不会直接收到此命令的后续输出。如果需要知道运行状态，请通过其他命令（如 ps、curl 或检查日志文件）来验证。";
     }
-    catch (Exception ex) { return $"[执行异常] {ex.Message}"; }
-    finally { if (!string.IsNullOrEmpty(askPassPath) && File.Exists(askPassPath)) try { File.Delete(askPassPath); } catch { } }
-    
-    var errLines = errorBuilder.ToString().Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
-    var outLines = outputBuilder.ToString().Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
-    var compressedErr = UniversalLogCompressor.CompressLogs(errLines);
-    var compressedOut = UniversalLogCompressor.CompressLogs(outLines);
-    var finalErr = string.Join("\n", compressedErr).Trim();
-    var finalOut = string.Join("\n", compressedOut).Trim();
+    else
+    {
+        // ================= 前台阻塞模式（原逻辑） =================
+        var consoleEncoding = new UTF8Encoding(false);
+        using var p = new Process();
+        p.StartInfo = new ProcessStartInfo(isWin ? "cmd.exe" : "/bin/bash", isWin ? $"/c {cmd}" : $"-c \"{cmd}\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = consoleEncoding,
+            StandardErrorEncoding = consoleEncoding
+        };
 
-    return !string.IsNullOrWhiteSpace(finalErr) ? $"[标准错误/进度信息]\n{finalErr}\n[标准输出]\n{finalOut}" : finalOut;
+        if (!isWin && !string.IsNullOrEmpty(askPassPath)) p.StartInfo.EnvironmentVariables["SUDO_ASKPASS"] = askPassPath;
+        
+        var outputBuilder = new StringBuilder();
+        var errorBuilder = new StringBuilder();
+        p.OutputDataReceived += (sender, e) => { if (e.Data == null) return; Console.WriteLine(e.Data); outputBuilder.AppendLine(e.Data); };
+        p.ErrorDataReceived += (sender, e) => { if (e.Data == null) return; Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(e.Data); Console.ResetColor(); errorBuilder.AppendLine(e.Data); };
+        
+        try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); p.WaitForExit(); } 
+        catch (Exception ex) { return $"[执行异常] {ex.Message}"; }
+        finally { if (!string.IsNullOrEmpty(askPassPath) && File.Exists(askPassPath)) try { File.Delete(askPassPath); } catch { } }
+        
+        var errLines = errorBuilder.ToString().Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
+        var outLines = outputBuilder.ToString().Split(["\r\n", "\r", "\n"], StringSplitOptions.None);
+        var compressedErr = UniversalLogCompressor.CompressLogs(errLines);
+        var compressedOut = UniversalLogCompressor.CompressLogs(outLines);
+        var finalErr = string.Join("\n", compressedErr).Trim();
+        var finalOut = string.Join("\n", compressedOut).Trim();
+
+        return !string.IsNullOrWhiteSpace(finalErr) ? $"[标准错误/进度信息]\n{finalErr}\n[标准输出]\n{finalOut}" : finalOut;
+    }
 }
 
 string ReadFile(string? path)
