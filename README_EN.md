@@ -37,12 +37,12 @@
 ## 🖥️ Interface Preview
 
 <div align="center">
-  <img src="./电脑截图.png" alt="PiPiClaw desktop console in action" width="49%" />
-  <img src="./电脑设置界面.png" alt="PiPiClaw multi-provider settings (OpenAI-compatible LLMs)" width="49%" />
+  <img src="./desktop-screenshot.png" alt="PiPiClaw desktop console in action" width="49%" />
+  <img src="./settings-llm.png" alt="PiPiClaw multi-provider settings (OpenAI-compatible LLMs)" width="49%" />
 </div>
 
 <div align="center">
-  <img src="./手机布局.png" alt="PiPiClaw mobile responsive layout" width="32%" />
+  <img src="./mobile-layout.png" alt="PiPiClaw mobile responsive layout" width="32%" />
 </div>
 
 > The desktop settings page lets you add any OpenAI-compatible model & endpoint, making it easy to switch among Qwen, DeepSeek, Moonshot, OpenAI/Azure, and more.

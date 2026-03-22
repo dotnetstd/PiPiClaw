@@ -39,12 +39,12 @@
 ## 🖥️ 界面预览
 
 <div align="center">
-  <img src="./电脑截图.png" alt="PiPiClaw 桌面端运行界面" width="49%" />
-  <img src="./电脑设置界面.png" alt="PiPiClaw 多模型设置（OpenAI 协议兼容，支持多家 LLM）" width="49%" />
+  <img src="./desktop-screenshot.png" alt="PiPiClaw 桌面端运行界面" width="49%" />
+  <img src="./settings-llm.png" alt="PiPiClaw 多模型设置（OpenAI 协议兼容，支持多家 LLM）" width="49%" />
 </div>
 
 <div align="center">
-  <img src="./手机布局.png" alt="PiPiClaw 移动端自适应布局" width="32%" />
+  <img src="./mobile-layout.png" alt="PiPiClaw 移动端自适应布局" width="32%" />
 </div>
 
 > 桌面端设置页可自由添加任意 OpenAI 协议兼容的模型与 Endpoint，轻松切换 Qwen、DeepSeek、Moonshot、OpenAI/Azure 等不同 LLM。
