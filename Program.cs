@@ -1277,7 +1277,7 @@ string GetWebUIHtml()
             --bg-depth: #0e1420;
             --bg-mid: #0b101a;
             --bg-card: rgba(255, 255, 255, .08);
-            --pipi-magenta: #a78bfa;
+            --pipi-magenta: #5ac8fa;
             --pipi-cyan: #5ac8fa;
             --text-main: #e8edf5;
             --text-muted: #9aa6b6;
@@ -1311,7 +1311,7 @@ string GetWebUIHtml()
             --bg-depth: #e9edf5;
             --bg-mid: #e2e8f0;
             --bg-card: rgba(255, 255, 255, .9);
-            --pipi-magenta: #7c6ff1;
+            --pipi-magenta: #418dde;
             --pipi-cyan: #4a90e2;
             --text-main: #1f2a3d;
             --text-muted: #596273;
@@ -1413,7 +1413,7 @@ string GetWebUIHtml()
             z-index: 2;
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 8px;
             flex: 1;
             min-height: 0;
         }
@@ -1745,9 +1745,8 @@ string GetWebUIHtml()
             display: flex;
             gap: 12px;
             align-items: stretch;
-            margin-top: 18px;
             border-top: 1px solid var(--chat-box-border);
-            padding-top: 18px;
+            padding-top: 8px;
             transition: border-color 0.4s;
         }
         .input-main {
@@ -1836,7 +1835,7 @@ string GetWebUIHtml()
         .btn-send {
             width: 100%;
             height: 100%;
-            border-radius: 14px;
+            border-radius: 6px;
             border: 1px solid var(--glass-stroke);
             background: linear-gradient(145deg, var(--pipi-cyan), #368ddc);
             color: #fff;
@@ -1861,7 +1860,7 @@ string GetWebUIHtml()
         .btn-cancel {
             width: 100%;
             height: 100%;
-            border-radius: 14px;
+            border-radius: 6px;
             border: 1px solid var(--glass-stroke);
             background: linear-gradient(145deg, var(--pipi-magenta), #6f5bd6);
             color: #fff;
@@ -1960,6 +1959,14 @@ string GetWebUIHtml()
         }
         .btn-add-model:hover {
             background: rgba(90, 200, 250, 0.15);
+        }
+        #tasksBox {
+            flex-shrink: 0; /* 防止面板本身被异常压缩 */
+        }
+        #tasksContainer {
+            max-height: 160px; /* 限制最大高度，避免撑爆页面 */
+            overflow-y: auto;  /* 任务多了自动出滚动条 */
+            padding-right: 6px;
         }
         @media (max-width:600px) {
             :root {
@@ -2116,6 +2123,41 @@ string GetWebUIHtml()
             font-weight: bold;
             margin-right: 5px;
         }
+        .btn-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 70px;
+            align-self: stretch;
+        }
+        .btn-tasks {
+            width: 100%;
+            height: 28px;
+            border-radius: 6px;
+            border: 1px solid var(--glass-stroke);
+            background: rgba(167, 139, 250, 0.1);
+            color: var(--pipi-magenta);
+            font-size: 0.75em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            backdrop-filter: blur(10px);
+            flex-shrink: 0;
+        }
+        .btn-tasks:hover {
+            background: rgba(167, 139, 250, 0.25);
+            border-color: var(--pipi-magenta);
+        }
+        .btn-wrapper {
+            width: 100%;
+            flex: 1; 
+            min-height: 50px;
+        }
+        @media (max-width:600px) {
+            .btn-col { width: 60px; }
+            .btn-tasks { font-size: 0.7em; height: 26px; }
+            .btn-wrapper { min-height: 46px; }
+        }
     </style>
 </head>
 <body>
@@ -2156,26 +2198,41 @@ string GetWebUIHtml()
                         <span class="loader-text">正在深潜数据流...</span>
                     </div>
                 </div>
-                <div class="btn-wrapper" id="sendWrapper">
-                    <button class="btn-send" type="button" onclick="sendMsg()" aria-label="Send">
-                        <svg viewBox="0 0 24 24">
-                            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
-                        </svg>
-                    </button>
-                </div>
-                <div class="btn-wrapper" id="cancelWrapper" style="display:none;">
-                    <button class="btn-cancel" type="button" onclick="cancelTask()" aria-label="Cancel">
-                        <svg viewBox="0 0 24 24">
-                            <path
-                                d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-                        </svg>
-                    </button>
+                <div class="btn-col">
+                    <button type="button" class="btn-tasks" onclick="toggleTasksModal()" title="任务管理面板"> ⏰ </button>
+
+                    <div class="btn-wrapper" id="sendWrapper">
+                        <button class="btn-send" type="button" onclick="sendMsg()" aria-label="Send">
+                            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+                        </button>
+                    </div>
+                    <div class="btn-wrapper" id="cancelWrapper" style="display:none;">
+                        <button class="btn-cancel" type="button" onclick="cancelTask()" aria-label="Cancel">
+                            <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="box" id="tasksBox" style="display:none; border-color:var(--pipi-magenta); animation-delay:.3s;">
-            <h2><span style="color:var(--pipi-magenta);">⏰</span> 挂起与守护任务 (Daemon Tasks)</h2>
-            <div id="tasksContainer"></div>
+    </div>
+    <div class="modal" id="tasksModal" aria-hidden="true" role="dialog" aria-labelledby="tasksTitle">
+        <div class="modal-dialog box" style="animation:none; max-width: 600px;">
+            <div class="modal-header">
+                <h2 id="tasksTitle"><span style="color:var(--pipi-magenta);">⏰</span> 任务调度中心 (Tasks)</h2>
+                <button type="button" class="header-btn modal-close" onclick="closeTasksModal()" aria-label="关闭面板">✖</button>
+            </div>
+            <div class="collapse-body" style="max-height: 60vh; overflow-y: auto; padding-right: 5px;">
+                <div>
+                    <h3 style="font-size: 0.9em; color: var(--text-main); margin: 0 0 10px 0; display:flex; justify-content:space-between;">
+                        <span>⏳ 延时任务 (< 2小时)</span>
+                    </h3>
+                    <div id="delayedTasksContainer" style="margin-bottom: 25px;"></div>
+                </div>
+                <div style="border-top: 1px dashed var(--glass-stroke); padding-top: 15px;">
+                    <h3 style="font-size: 0.9em; color: var(--text-main); margin: 0 0 10px 0;">📅 定时任务 (及长周期任务)</h3>
+                    <div id="scheduledTasksContainer"></div>
+                </div>
+            </div>
         </div>
     </div>
     <div class="modal" id="configModal" aria-hidden="true" role="dialog" aria-labelledby="configTitle">
@@ -2443,26 +2500,93 @@ string GetWebUIHtml()
                 alert('配置上传失败：' + (e?.message || '通信中断'));
             }
         }
+
+        // --- 新增：任务弹窗控制逻辑 ---
+        const tasksModal = document.getElementById('tasksModal');
+        function openTasksModal() {
+            if (!tasksModal) return;
+            tasksModal.classList.add('show');
+            tasksModal.setAttribute('aria-hidden', 'false');
+        }
+        function closeTasksModal() {
+            if (!tasksModal) return;
+            tasksModal.classList.remove('show');
+            tasksModal.setAttribute('aria-hidden', 'true');
+        }
+        function toggleTasksModal() {
+            if (tasksModal && tasksModal.classList.contains('show')) closeTasksModal();
+            else openTasksModal();
+        }
+        if (tasksModal) {
+            tasksModal.addEventListener('click', (e) => {
+                if (e.target === tasksModal) closeTasksModal();
+            });
+        }
+        // 更新了 Escape 键的监听，兼顾两个弹窗
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { closeConfig(); closeTasksModal(); }
+        });
+
+        // --- 替换原有的 fetchTasks 函数：分发逻辑与按钮红点提示 ---
         async function fetchTasks() {
             try {
                 const res = await fetch('/api/tasks');
                 if (!res.ok) return;
                 const tasks = await res.json();
-                const container = document.getElementById('tasksContainer');
+
                 const pending = (tasks || []).filter(t => t.status === 'pending');
-                if (pending.length > 0) {
-                    document.getElementById('tasksBox').style.display = 'block';
-                    container.innerHTML = pending.map(t => `
-                        <div class="task-item" style="border-left:4px solid var(--pipi-magenta); padding:12px; margin-bottom:12px; background:rgba(255,0,127,0.05)">
-                        <div style="font-size:0.8em; color:var(--text-muted)">${escapeHtml(t.execute_at)}</div>
-                        <div style="font-weight:800">${escapeHtml(t.user_intent)}</div>
-                        </div>
-                    `).join('');
-                } else {
-                    document.getElementById('tasksBox').style.display = 'none';
+
+                // 动态更新按钮数字
+                const btnTasks = document.querySelector('.btn-tasks');
+                if (btnTasks) {
+                    btnTasks.innerHTML = pending.length > 0 ? `⏰ (${pending.length})` : `⏰ 任务`;
+                    btnTasks.style.color = pending.length > 0 ? '#fff' : 'var(--pipi-magenta)';
+                    btnTasks.style.background = pending.length > 0 ? 'var(--pipi-magenta)' : 'rgba(167, 139, 250, 0.1)';
                 }
+
+                const delayedContainer = document.getElementById('delayedTasksContainer');
+                const scheduledContainer = document.getElementById('scheduledTasksContainer');
+                if (!delayedContainer || !scheduledContainer) return;
+
+                const now = new Date();
+                const delayedTasks = [];
+                const scheduledTasks = [];
+
+                // 区分延时还是定时任务 (<2小时为延时)
+                pending.forEach(t => {
+                    const execTime = new Date(t.execute_at);
+                    const diffHours = (execTime - now) / (1000 * 60 * 60);
+                    if (diffHours > 0 && diffHours < 2) delayedTasks.push(t);
+                    else scheduledTasks.push(t);
+                });
+
+                // 渲染单个任务的卡片模板
+                const renderTask = (t, colorClass) => {
+                    const dateObj = new Date(t.execute_at);
+                    const timeStr = dateObj.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                    const loopTag = t.interval_minutes > 0 ? `<span style="background:var(--pipi-cyan); color:#000; padding:2px 4px; border-radius:4px; font-size:0.8em; margin-left:6px;">每${t.interval_minutes}分</span>` : '';
+
+                    return `
+                    <div class="task-item" style="border-left:3px solid var(--pipi-${colorClass}); padding:12px; margin-bottom:10px; background:var(--cmd-bg); border-radius:6px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:0.85em; color:var(--text-muted); font-family:var(--font-mono);">${timeStr} ${loopTag}</div>
+                            <div style="font-size:0.7em; color:var(--text-muted); opacity:0.6;">ID: ${t.id.substring(0,6)}</div>
+                        </div>
+                        <div style="font-weight:bold; margin-top:6px; font-size:0.95em;">${escapeHtml(t.user_intent)}</div>
+                    </div>`;
+                };
+
+                delayedContainer.innerHTML = delayedTasks.length > 0 
+                    ? delayedTasks.map(t => renderTask(t, 'cyan')).join('') 
+                    : '<div style="color:var(--text-muted); font-size:0.85em; padding:10px 0; opacity:0.6;">暂无延时任务在挂起队列中</div>';
+
+                scheduledContainer.innerHTML = scheduledTasks.length > 0 
+                    ? scheduledTasks.map(t => renderTask(t, 'magenta')).join('') 
+                    : '<div style="color:var(--text-muted); font-size:0.85em; padding:10px 0; opacity:0.6;">暂无定时任务在挂起队列中</div>';
+
             } catch { }
         }
+        
         setInterval(fetchTasks, 1000);
         let currentAbortController = null;
         function setBusy(busy) {
