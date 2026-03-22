@@ -1167,13 +1167,18 @@ async Task<string> SelfUpdate()
 
             var bat = new StringBuilder();
             bat.AppendLine("@echo off");
+            // 【修复 1】强制控制台使用 UTF-8 编码显示，告别乱码
+            bat.AppendLine("chcp 65001 >nul");
             bat.AppendLine("setlocal enabledelayedexpansion");
-            bat.AppendLine($"set PID={currentPid}");
-            bat.AppendLine($"set DL_URL=\"{downloadUrl}\"");
-            bat.AppendLine($"set TARGET=\"{currentExePath}\"");
-            bat.AppendLine($"set ARCHIVE=\"{archivePath}\"");
-            bat.AppendLine($"set EXTRACT=\"{extractDir}\"");
+
+            // 【修复 2】使用标准的 set "变量=值" 写法，防止变量内部带引号
+            bat.AppendLine($"set \"PID={currentPid}\"");
+            bat.AppendLine($"set \"DL_URL={downloadUrl}\"");
+            bat.AppendLine($"set \"TARGET={currentExePath}\"");
+            bat.AppendLine($"set \"ARCHIVE={archivePath}\"");
+            bat.AppendLine($"set \"EXTRACT={extractDir}\"");
             bat.AppendLine();
+
             bat.AppendLine("echo [AutoUpdate] 正在等待进程退出...");
             bat.AppendLine(":waitloop");
             bat.AppendLine("tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul");
@@ -1181,24 +1186,33 @@ async Task<string> SelfUpdate()
             bat.AppendLine("  timeout /t 1 /nobreak >nul");
             bat.AppendLine("  goto waitloop");
             bat.AppendLine(")");
+
+            bat.AppendLine("echo [AutoUpdate] 进程已退出，开始下载压缩包...");
             bat.AppendLine("powershell -NoProfile -Command \"Invoke-WebRequest -Uri '%DL_URL%' -OutFile '%ARCHIVE%'\" || goto fail");
+
+            bat.AppendLine("echo [AutoUpdate] 下载完成，开始解压...");
             bat.AppendLine("powershell -NoProfile -Command \"Expand-Archive -Path '%ARCHIVE%' -DestinationPath '%EXTRACT%' -Force\" || goto fail");
+
+            bat.AppendLine("echo [AutoUpdate] 准备替换文件...");
             bat.AppendLine($"if not exist \"%EXTRACT%\\{exeName}\" goto fail");
             bat.AppendLine($"copy /y \"%EXTRACT%\\{exeName}\" \"%TARGET%\" || goto fail");
+
+            bat.AppendLine("echo [AutoUpdate] 替换成功，正在重启...");
             bat.AppendLine("start \"\" \"%TARGET%\"");
             bat.AppendLine("rd /s /q \"%EXTRACT%\"");
             bat.AppendLine("del \"%ARCHIVE%\"");
             bat.AppendLine("del \"%~f0\"");
             bat.AppendLine("exit /b 0");
+
             bat.AppendLine(":fail");
-            bat.AppendLine("echo [AutoUpdate] 更新失败，未能完成替换");
-            bat.AppendLine("pause"); // 【关键修改 1】加个 pause，失败时黑框不会闪退，方便你看报错
+            bat.AppendLine("echo [AutoUpdate] 更新失败，未能完成替换！");
+            bat.AppendLine("pause"); // 失败时依然暂停，留存案发现场
             bat.AppendLine("del \"%~f0\"");
             bat.AppendLine("exit /b 1");
 
-            File.WriteAllText(scriptPath, bat.ToString(), Encoding.ASCII);
-            
-            // 【关键修改 2】把 CreateNoWindow 改为 false，UseShellExecute 改为 true
+            // 【修复 3】使用 UTF8（无 BOM）写入文件，配合 chcp 65001 显示中文
+            File.WriteAllText(scriptPath, bat.ToString(), new UTF8Encoding(false));
+
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { CreateNoWindow = false, UseShellExecute = true });
         }
         else
