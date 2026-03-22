@@ -93,7 +93,7 @@ var toolsDoc = JsonDocument.Parse("""
 ]
 """);
 
-Console.Clear();
+
 // ========================== Logo & 简介 ==========================
 Console.ForegroundColor = ConsoleColor.Magenta;
 Console.WriteLine(@"
@@ -752,7 +752,6 @@ string GetInstalledSkillsContext()
 async Task Think(CancellationToken ct)
 {
     Console.ForegroundColor = ConsoleColor.Cyan;
-    Console.CursorVisible = false;
     for (int i = 0; !ct.IsCancellationRequested; i++)
     {
         Console.Write($"\r {"-\\|/"[i % 4]} 皮皮虾正在思考中...");
