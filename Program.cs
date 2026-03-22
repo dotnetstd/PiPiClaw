@@ -1152,83 +1152,95 @@ async Task<string> SelfUpdate()
         if (string.IsNullOrEmpty(currentExePath))
             return "[更新失败] 无法获取当前程序路径";
 
-        string tempDir = Path.Combine(Path.GetTempPath(), $"PiPiClaw_update_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
-        string archivePath = Path.Combine(tempDir, archiveName);
-        string tempExePath = Path.Combine(tempDir, exeName);
+        int currentPid = Environment.ProcessId;
 
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine($"[自动更新] 正在从 GitHub 下载最新版本...");
+        Console.WriteLine($"[自动更新] 将由外部脚本下载并替换 {archiveName}");
         Console.WriteLine($"[自动更新] 平台: {rid}，下载地址: {downloadUrl}");
-        Console.ResetColor();
-
-        using var updateClient = new HttpClient();
-        updateClient.DefaultRequestHeaders.Add("User-Agent", "PiPiClaw-Updater/1.0");
-        using var dlResponse = await updateClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
-        dlResponse.EnsureSuccessStatusCode();
-        using (var dlStream = await dlResponse.Content.ReadAsStreamAsync())
-        using (var fs = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None))
-            await dlStream.CopyToAsync(fs);
-
-        // Extract the executable from the downloaded archive
-        if (isWin)
-        {
-            ZipFile.ExtractToDirectory(archivePath, tempDir, overwriteFiles: true);
-        }
-        else
-        {
-            using var archiveFs = File.OpenRead(archivePath);
-            using var gzStream = new GZipStream(archiveFs, CompressionMode.Decompress);
-            using var tarReader = new TarReader(gzStream);
-            TarEntry? entry;
-            while ((entry = tarReader.GetNextEntry()) != null)
-            {
-                if (Path.GetFileName(entry.Name) == exeName && !entry.Name.Contains('/'))
-                {
-                    entry.ExtractToFile(tempExePath, overwrite: true);
-                    break;
-                }
-            }
-        }
-
-        if (!File.Exists(tempExePath))
-        {
-            try { Directory.Delete(tempDir, true); } catch { }
-            return $"[更新失败] 在压缩包中未找到可执行文件 {exeName}";
-        }
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"[自动更新] 下载完成！正在准备重启脚本...");
         Console.ResetColor();
 
         if (isWin)
         {
             string scriptPath = Path.Combine(Path.GetTempPath(), $"pi_update_{Guid.NewGuid():N}.bat");
-            File.WriteAllText(scriptPath,
-                $"@echo off\r\n" +
-                $"timeout /t 2 /nobreak >nul\r\n" +
-                $"copy /y \"{tempExePath}\" \"{currentExePath}\"\r\n" +
-                $"start \"\" \"{currentExePath}\"\r\n" +
-                $"rd /s /q \"{tempDir}\"\r\n" +
-                $"del \"%~f0\"\r\n", Encoding.ASCII);
+            string archivePath = Path.Combine(Path.GetTempPath(), $"PiPiClaw_pkg_{Guid.NewGuid():N}.zip");
+            string extractDir = Path.Combine(Path.GetTempPath(), $"PiPiClaw_extract_{Guid.NewGuid():N}");
+
+            var bat = new StringBuilder();
+            bat.AppendLine("@echo off");
+            bat.AppendLine("setlocal enabledelayedexpansion");
+            bat.AppendLine($"set PID={currentPid}");
+            bat.AppendLine($"set DL_URL=\"{downloadUrl}\"");
+            bat.AppendLine($"set TARGET=\"{currentExePath}\"");
+            bat.AppendLine($"set ARCHIVE=\"{archivePath}\"");
+            bat.AppendLine($"set EXTRACT=\"{extractDir}\"");
+            bat.AppendLine();
+            bat.AppendLine("echo [AutoUpdate] 正在等待进程退出...");
+            bat.AppendLine(":waitloop");
+            bat.AppendLine("tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul");
+            bat.AppendLine("if %ERRORLEVEL%==0 (");
+            bat.AppendLine("  timeout /t 1 /nobreak >nul");
+            bat.AppendLine("  goto waitloop");
+            bat.AppendLine(")");
+            bat.AppendLine("powershell -NoProfile -Command \"Invoke-WebRequest -Uri '%DL_URL%' -OutFile '%ARCHIVE%'\" || goto fail");
+            bat.AppendLine("powershell -NoProfile -Command \"Expand-Archive -Path '%ARCHIVE%' -DestinationPath '%EXTRACT%' -Force\" || goto fail");
+            bat.AppendLine($"if not exist \"%EXTRACT%\\{exeName}\" goto fail");
+            bat.AppendLine($"copy /y \"%EXTRACT%\\{exeName}\" \"%TARGET%\" || goto fail");
+            bat.AppendLine("start \"\" \"%TARGET%\"");
+            bat.AppendLine("rd /s /q \"%EXTRACT%\"");
+            bat.AppendLine("del \"%ARCHIVE%\"");
+            bat.AppendLine("del \"%~f0\"");
+            bat.AppendLine("exit /b 0");
+            bat.AppendLine(":fail");
+            bat.AppendLine("echo [AutoUpdate] 更新失败，未能完成替换");
+            bat.AppendLine("timeout /t 5 /nobreak >nul");
+            bat.AppendLine("del \"%~f0\"");
+            bat.AppendLine("exit /b 1");
+
+            File.WriteAllText(scriptPath, bat.ToString(), Encoding.ASCII);
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { CreateNoWindow = true, UseShellExecute = false });
         }
         else
         {
             string scriptPath = Path.Combine(Path.GetTempPath(), $"pi_update_{Guid.NewGuid():N}.sh");
-            File.WriteAllText(scriptPath,
-                $"#!/bin/sh\n" +
-                $"sleep 2\n" +
-                $"cp \"{tempExePath}\" \"{currentExePath}\"\n" +
-                $"chmod +x \"{currentExePath}\"\n" +
-                $"rm -rf \"{tempDir}\"\n" +
-                $"\"{currentExePath}\" &\n" +
-                $"rm -f \"$0\"\n", new UTF8Encoding(false));
+            string archivePath = Path.Combine(Path.GetTempPath(), $"PiPiClaw_pkg_{Guid.NewGuid():N}.{ext}");
+            string extractDir = Path.Combine(Path.GetTempPath(), $"PiPiClaw_extract_{Guid.NewGuid():N}");
+
+            var sh = new StringBuilder();
+            sh.AppendLine("#!/bin/sh");
+            sh.AppendLine($"PID={currentPid}");
+            sh.AppendLine($"DL_URL=\"{downloadUrl}\"");
+            sh.AppendLine($"TARGET=\"{currentExePath}\"");
+            sh.AppendLine($"ARCHIVE=\"{archivePath}\"");
+            sh.AppendLine($"EXTRACT=\"{extractDir}\"");
+            sh.AppendLine();
+            sh.AppendLine("echo \"[AutoUpdate] waiting process $PID exit...\"");
+            sh.AppendLine("while kill -0 \"$PID\" 2>/dev/null; do");
+            sh.AppendLine("  sleep 1");
+            sh.AppendLine("done");
+            sh.AppendLine();
+            sh.AppendLine("if command -v curl >/dev/null 2>&1; then");
+            sh.AppendLine("  curl -fL \"$DL_URL\" -o \"$ARCHIVE\" || exit 1");
+            sh.AppendLine("elif command -v wget >/dev/null 2>&1; then");
+            sh.AppendLine("  wget -O \"$ARCHIVE\" \"$DL_URL\" || exit 1");
+            sh.AppendLine("else");
+            sh.AppendLine("  echo \"[AutoUpdate] 未找到 curl 或 wget\"; exit 1;");
+            sh.AppendLine("fi");
+            sh.AppendLine();
+            sh.AppendLine("mkdir -p \"$EXTRACT\"");
+            sh.AppendLine("tar -xzf \"$ARCHIVE\" -C \"$EXTRACT\" || exit 1");
+            sh.AppendLine($"if [ ! -f \"$EXTRACT/{exeName}\" ]; then echo \"[AutoUpdate] 未找到可执行文件\"; exit 1; fi");
+            sh.AppendLine($"cp \"$EXTRACT/{exeName}\" \"$TARGET\" || exit 1");
+            sh.AppendLine("chmod +x \"$TARGET\"");
+            sh.AppendLine("nohup \"$TARGET\" >/dev/null 2>&1 &");
+            sh.AppendLine("rm -rf \"$EXTRACT\" \"$ARCHIVE\"");
+            sh.AppendLine("rm -f \"$0\"");
+
+            File.WriteAllText(scriptPath, sh.ToString(), new UTF8Encoding(false));
             Process.Start(new ProcessStartInfo("/bin/sh", scriptPath) { CreateNoWindow = true, UseShellExecute = false });
         }
 
         selfUpdateRequested = true;
-        return "[自动更新] 下载成功！更新脚本已启动，皮皮虾即将重启，稍后自动恢复运行。";
+        return $"[自动更新] 更新脚本已启动，将下载 {archiveName} 并在退出后自动替换重启。";
     }
     catch (Exception ex)
     {
@@ -1811,8 +1823,13 @@ string GetWebUIHtml()
       padding-top:18px;
       transition: border-color 0.4s;
     }
-    textarea{
+    .input-main{
+      position:relative;
       flex:1;
+      min-height:60px;
+    }
+    textarea{
+      width:100%;
       height:60px;
       min-height:60px;
       max-height:180px;
@@ -1828,11 +1845,43 @@ string GetWebUIHtml()
       outline:none;
       transition:all .2s;
     }
+    textarea:disabled{
+      opacity:0.8;
+      cursor:not-allowed;
+    }
     textarea:focus{
       border-color:var(--pipi-cyan);
       background:var(--input-focus);
       box-shadow:0 0 20px rgba(0,242,254,.12);
     }
+
+    .loading-overlay{
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      border-radius:12px;
+      background:linear-gradient(135deg,rgba(0,0,0,.6),rgba(0,0,0,.3));
+      color:var(--pipi-cyan);
+      font-size:.9em;
+      letter-spacing:1px;
+      opacity:0;
+      visibility:hidden;
+      pointer-events:none;
+      transition:opacity .2s ease, visibility .2s ease;
+    }
+    .loading-overlay.show{
+      opacity:1;
+      visibility:visible;
+      pointer-events:auto;
+    }
+    .loader-bars{display:inline-flex;gap:4px;align-items:center;}
+    .loader-bars span{width:4px;height:12px;background:var(--pipi-cyan);animation:barDance 1s infinite;border-radius:2px;}
+    .loader-bars span:nth-child(2){animation-delay:.2s;}
+    .loader-bars span:nth-child(3){animation-delay:.4s;}
+    .loader-text{white-space:nowrap;}
 
     .btn-wrapper{width:70px; height:60px;}
     .btn-send{
@@ -1866,21 +1915,6 @@ string GetWebUIHtml()
     }
     .btn-cancel:hover{transform:translateY(-2px) scale(1.03); box-shadow:0 10px 25px rgba(255,0,127,.5);}
     .btn-cancel svg{width:22px;height:22px;fill:currentColor;}
-
-    .loader-wrapper{
-      height:30px;
-      margin:14px auto 0;
-      text-align:center;
-      color:var(--pipi-cyan);
-      font-size:.8em;
-      text-transform:uppercase;
-      letter-spacing:2px;
-      visibility:hidden;
-    }
-    .loader-bars{display:inline-flex;gap:4px;align-items:center;margin-right:10px;}
-    .loader-bars span{width:4px;height:12px;background:var(--pipi-cyan);animation:barDance 1s infinite;border-radius:2px;}
-    .loader-bars span:nth-child(2){animation-delay:.2s;}
-    .loader-bars span:nth-child(3){animation-delay:.4s;}
 
     #qrcode-container{
       position:fixed; bottom:30px; left:30px; z-index:999;
@@ -1992,13 +2026,14 @@ string GetWebUIHtml()
         </div>
       </div>
 
-      <div class="loader-wrapper" id="loading">
-        <div class="loader-bars"><span></span><span></span><span></span></div>
-        正在深潜数据流...
-      </div>
-
       <div class="input-area">
-        <textarea id="chatInput" placeholder="输入任务指令... (按 Enter 发送)"></textarea>
+        <div class="input-main">
+          <textarea id="chatInput" placeholder="输入任务指令... (按 Enter 发送)"></textarea>
+          <div class="loading-overlay" id="loadingOverlay" aria-live="polite">
+            <div class="loader-bars"><span></span><span></span><span></span></div>
+            <span class="loader-text">正在深潜数据流...</span>
+          </div>
+        </div>
         <div class="btn-wrapper" id="sendWrapper">
           <button class="btn-send" type="button" onclick="sendMsg()" aria-label="Send">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
@@ -2254,9 +2289,18 @@ string GetWebUIHtml()
     let currentAbortController = null;
 
     function setBusy(busy) {
-      document.getElementById('sendWrapper').style.display = busy ? 'none' : 'block';
-      document.getElementById('cancelWrapper').style.display = busy ? 'block' : 'none';
-      document.getElementById('loading').style.visibility = busy ? 'visible' : 'hidden';
+      const sendWrapper = document.getElementById('sendWrapper');
+      const cancelWrapper = document.getElementById('cancelWrapper');
+      const overlay = document.getElementById('loadingOverlay');
+      const input = document.getElementById('chatInput');
+
+      if (sendWrapper) sendWrapper.style.display = busy ? 'none' : 'block';
+      if (cancelWrapper) cancelWrapper.style.display = busy ? 'block' : 'none';
+      if (overlay) overlay.classList.toggle('show', busy);
+      if (input) {
+        input.disabled = busy;
+        if (busy) input.blur();
+      }
     }
 
     async function cancelTask() {
@@ -2267,6 +2311,7 @@ string GetWebUIHtml()
 
     async function sendMsg() {
       const input = document.getElementById('chatInput');
+      if (!input || input.disabled) return;
       const text = (input.value || '').trim();
       if (!text) return;
 
@@ -2384,7 +2429,10 @@ string GetWebUIHtml()
               for (const tc of msg.tool_calls) {
                 const actionSpan = document.createElement('span');
                 actionSpan.className = 'log-action';
-                actionSpan.textContent = '>> ' + tc.function.name + '(' + tc.function.arguments + ')';
+                const fnName = (tc.function && tc.function.name) ? tc.function.name : 'tool';
+                const rawArgs = (tc.function && typeof tc.function.arguments === 'string') ? tc.function.arguments.trim() : '';
+                const displayArgs = rawArgs && rawArgs !== '{}' ? rawArgs : '';
+                actionSpan.textContent = `>> ${fnName}${displayArgs ? '(' + displayArgs + ')' : '()'}`;
                 currentTerminalBox.appendChild(actionSpan);
               }
             }
