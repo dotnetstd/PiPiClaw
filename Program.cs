@@ -1192,12 +1192,14 @@ async Task<string> SelfUpdate()
             bat.AppendLine("exit /b 0");
             bat.AppendLine(":fail");
             bat.AppendLine("echo [AutoUpdate] 更新失败，未能完成替换");
-            bat.AppendLine("timeout /t 5 /nobreak >nul");
+            bat.AppendLine("pause"); // 【关键修改 1】加个 pause，失败时黑框不会闪退，方便你看报错
             bat.AppendLine("del \"%~f0\"");
             bat.AppendLine("exit /b 1");
 
             File.WriteAllText(scriptPath, bat.ToString(), Encoding.ASCII);
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { CreateNoWindow = true, UseShellExecute = false });
+            
+            // 【关键修改 2】把 CreateNoWindow 改为 false，UseShellExecute 改为 true
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"") { CreateNoWindow = false, UseShellExecute = true });
         }
         else
         {
