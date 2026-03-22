@@ -1270,7 +1270,150 @@ async Task<string> SelfUpdate()
         return $"[更新失败] {ex.Message}";
     }
 }
+async Task HandleRequestAsync(HttpListenerContext context, int webPort)
+{
+    var req = context.Request;
+    var res = context.Response;
 
+    // 1. 设置跨域 Header (CORS)
+    res.Headers.Add("Access-Control-Allow-Origin", "*");
+    res.Headers.Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    res.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
+
+    try
+    {
+        // 2. 处理预检请求
+        if (req.HttpMethod == "OPTIONS")
+        {
+            res.StatusCode = 200;
+            res.Close();
+            return;
+        }
+
+        var url = req.Url;
+        if (url == null) { res.StatusCode = 400; res.Close(); return; }
+
+        string path = url.AbsolutePath;
+
+        // 3. 路由分发
+        switch (path)
+        {
+            // --- 首页渲染 ---
+            case "/":
+                string htmlContent = GetWebUIHtml()
+                    .Replace("{{LAN_IP}}", GetLocalIpAddress())
+                    .Replace("{{WEB_PORT}}", webPort.ToString())
+                    .Replace("{{LOGO_DATA_URL}}", GetLogoDataUrl());
+                byte[] buffer = Encoding.UTF8.GetBytes(htmlContent);
+                res.ContentType = "text/html; charset=utf-8";
+                res.ContentLength64 = buffer.Length;
+                await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                break;
+
+            // --- 获取配置 ---
+            case "/api/config" when req.HttpMethod == "GET":
+                byte[] cfgBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(GlobalConfig, AppJsonContext.Default.AppConfig));
+                res.ContentType = "application/json";
+                await res.OutputStream.WriteAsync(cfgBytes, 0, cfgBytes.Length);
+                break;
+
+            // --- 保存配置 ---
+            case "/api/config" when req.HttpMethod == "POST":
+                using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+                {
+                    var body = await reader.ReadToEndAsync();
+                    var newCfg = JsonSerializer.Deserialize(body, AppJsonContext.Default.AppConfig);
+                    bool portChanged = false;
+                    if (newCfg != null)
+                    {
+                        int currentPort = int.TryParse(GetConfig("WebPort", "5050"), out var cp) ? cp : 5050;
+                        portChanged = newCfg.WebPort != currentPort;
+                        File.WriteAllText("appsettings.json", JsonSerializer.Serialize(newCfg, AppJsonContext.Default.AppConfig), Encoding.UTF8);
+                        sudoPassword = newCfg.SudoPassword ?? "";
+                        GlobalConfig = newCfg;
+                    }
+                    res.ContentType = "application/json";
+                    var resp = Encoding.UTF8.GetBytes(portChanged ? "{\"status\":\"port_changed\"}" : "{\"status\":\"ok\"}");
+                    await res.OutputStream.WriteAsync(resp, 0, resp.Length);
+                }
+                break;
+
+            // --- 获取定时任务列表 ---
+            case "/api/tasks":
+                string tasksJson = "[]";
+                lock (tasksPath)
+                {
+                    if (File.Exists(tasksPath)) tasksJson = File.ReadAllText(tasksPath, Encoding.UTF8);
+                }
+                res.ContentType = "application/json";
+                byte[] tBytes = Encoding.UTF8.GetBytes(tasksJson);
+                await res.OutputStream.WriteAsync(tBytes, 0, tBytes.Length);
+                break;
+
+            // --- 中断当前 AI 任务 ---
+            case "/api/cancel":
+                currentTaskCts?.Cancel();
+                res.ContentType = "application/json";
+                await res.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"status\":\"cancelled\"}"));
+                break;
+
+            // --- 核心聊天接口 (支持多人排队) ---
+            case "/api/chat":
+                using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
+                {
+                    var body = await reader.ReadToEndAsync();
+                    var chatReqObj = JsonSerializer.Deserialize(body, AppJsonContext.Default.ChatReq);
+
+                    res.ContentType = "text/plain; charset=utf-8";
+                    res.SendChunked = true;
+
+                    using var writer = new StreamWriter(res.OutputStream, new UTF8Encoding(false));
+                    writer.AutoFlush = true;
+
+                    // 回调函数：将 AI 的状态实时推送给 Web 界面
+                    Action<string, string> onUpdate = (type, content) =>
+                    {
+                        try
+                        {
+                            var pushMsg = new PushMsg { Type = type, Content = content };
+                            writer.Write(JsonSerializer.Serialize(pushMsg, AppJsonContext.Default.PushMsg) + "|||END|||");
+                            writer.Flush();
+                        }
+                        catch { }
+                    };
+
+                    if (chatReqObj != null)
+                    {
+                        // 注意：RunAgent 内部依然受 agentLock 限制，会排队，但不会卡死 Web 访问
+                        await RunAgent(chatReqObj.Message, false, onUpdate, chatReqObj.ModelIndex);
+                    }
+                }
+                break;
+
+            // --- 历史记录 ---
+            case "/api/history":
+                string historyJson = JsonSerializer.Serialize(fullHistory, AppJsonContext.Default.ListChatMessage);
+                res.ContentType = "application/json";
+                byte[] hBytes = Encoding.UTF8.GetBytes(historyJson);
+                await res.OutputStream.WriteAsync(hBytes, 0, hBytes.Length);
+                break;
+
+            default:
+                res.StatusCode = 404;
+                break;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Request Error] {ex.Message}");
+        res.StatusCode = 500;
+    }
+    finally
+    {
+        // 无论成功失败，必须关闭连接释放资源
+        try { res.Close(); } catch { }
+    }
+}
 async Task StartWebManager()
 {
     int webPort = int.TryParse(GetConfig("WebPort", "5050"), out var p) && p > 0 ? p : 5050;
@@ -1297,130 +1440,16 @@ async Task StartWebManager()
         try
         {
             var context = await listener.GetContextAsync();
-            var req = context.Request;
-            var res = context.Response;
-
-            res.Headers.Add("Access-Control-Allow-Origin", "*");
-            res.Headers.Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-            res.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
-
-            if (req.HttpMethod == "OPTIONS")
-            {
-                res.StatusCode = 200;
-                res.Close();
-                continue;
-            }
-
-            var url = req.Url;
-            if (url == null)
-            {
-                res.StatusCode = 400;
-                res.Close();
-                continue;
-            }
-
-            if (url.AbsolutePath == "/")
-            {
-                string htmlContent = GetWebUIHtml()
-                    .Replace("{{LAN_IP}}", GetLocalIpAddress())
-                    .Replace("{{WEB_PORT}}", webPort.ToString())
-                    .Replace("{{LOGO_DATA_URL}}", GetLogoDataUrl());
-                byte[] buffer = Encoding.UTF8.GetBytes(htmlContent);
-                res.ContentType = "text/html; charset=utf-8";
-                res.ContentLength64 = buffer.Length;
-                await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/config" && req.HttpMethod == "GET")
-            {
-                byte[] buffer = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(GlobalConfig, AppJsonContext.Default.AppConfig));
-                res.ContentType = "application/json";
-                await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/config" && req.HttpMethod == "POST")
-            {
-                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-                var body = await reader.ReadToEndAsync();
-                var newCfg = JsonSerializer.Deserialize(body, AppJsonContext.Default.AppConfig);
-                bool portChanged = false;
-                if (newCfg != null)
+            _ = Task.Run(async () => {
+                try
                 {
-                    int currentPort = int.TryParse(GetConfig("WebPort", "5050"), out var cp) && cp > 0 ? cp : 5050;
-                    if (newCfg.WebPort < 1 || newCfg.WebPort > 65535) newCfg.WebPort = currentPort;
-                    portChanged = newCfg.WebPort != currentPort;
-                    File.WriteAllText("appsettings.json", JsonSerializer.Serialize(newCfg, AppJsonContext.Default.AppConfig), Encoding.UTF8);
-                    sudoPassword = newCfg.SudoPassword ?? "";
-                    GlobalConfig = newCfg;
+                    await HandleRequestAsync(context, webPort);
                 }
-                res.StatusCode = 200;
-                res.ContentType = "application/json";
-                var resultBytes = Encoding.UTF8.GetBytes(portChanged ? "{\"status\":\"port_changed\"}" : "{\"status\":\"ok\"}");
-                await res.OutputStream.WriteAsync(resultBytes, 0, resultBytes.Length);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/tasks" && req.HttpMethod == "GET")
-            {
-                string tasksJson = "[]";
-                lock (tasksPath)
+                catch (Exception ex)
                 {
-                    if (File.Exists(tasksPath)) tasksJson = File.ReadAllText(tasksPath, Encoding.UTF8);
+                    Console.WriteLine($"[Web Error] {ex.Message}");
                 }
-                byte[] buffer = Encoding.UTF8.GetBytes(tasksJson);
-                res.ContentType = "application/json";
-                await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/cancel" && req.HttpMethod == "POST")
-            {
-                currentTaskCts?.Cancel();
-                res.StatusCode = 200;
-                res.ContentType = "application/json";
-                var cancelBytes = Encoding.UTF8.GetBytes("{\"status\":\"cancelled\"}");
-                await res.OutputStream.WriteAsync(cancelBytes, 0, cancelBytes.Length);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/chat" && req.HttpMethod == "POST")
-            {
-                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-                var body = await reader.ReadToEndAsync();
-                var chatReqObj = JsonSerializer.Deserialize(body, AppJsonContext.Default.ChatReq);
-                var inputMsg = chatReqObj?.Message;
-                var modelIndex = chatReqObj?.ModelIndex ?? 0;
-
-                res.ContentType = "text/plain; charset=utf-8";
-                res.SendChunked = true;
-                using var writer = new StreamWriter(res.OutputStream, new UTF8Encoding(false));
-                writer.AutoFlush = true;
-
-                Action<string, string> onUpdate = (type, content) =>
-                {
-                    try
-                    {
-                        var pushMsg = new PushMsg { Type = type, Content = content };
-                        writer.Write(JsonSerializer.Serialize(pushMsg, AppJsonContext.Default.PushMsg) + "|||END|||");
-                        writer.Flush();
-                    }
-                    catch { }
-                };
-
-                // 这里传入了 modelIndex
-                if (!string.IsNullOrEmpty(inputMsg)) await RunAgent(inputMsg, false, onUpdate, modelIndex);
-                res.Close();
-            }
-            else if (url.AbsolutePath == "/api/history" && req.HttpMethod == "GET")
-            {
-                string historyJson = JsonSerializer.Serialize(fullHistory, AppJsonContext.Default.ListChatMessage);
-                byte[] buffer = Encoding.UTF8.GetBytes(historyJson);
-                res.ContentType = "application/json";
-                await res.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                res.Close();
-            }
-            else
-            {
-                res.StatusCode = 404;
-                res.Close();
-            }
+            });
         }
         catch { }
     }
