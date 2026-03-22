@@ -104,7 +104,7 @@ dotnet publish -c Release -r linux-x64 --self-contained true
 
 | 配置项 | 说明 |
 |--------|------|
-| `ApiKey` | 阿里云 DashScope API 密钥 |
+| `ApiKey` | Openai DashScope API 密钥 |
 | `Model` | 使用的 AI 模型 (默认 qwen3.5-plus) |
 | `Endpoint` | API 端点地址 |
 | `SudoPassword` | (可选) Linux/macOS 自动提权密码 |
