@@ -348,10 +348,18 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             {
                 lock (tasksPath) { try { currentTasksJson = File.ReadAllText(tasksPath, Encoding.UTF8); } catch { } }
             }
+
+            var customPrompt = !string.IsNullOrWhiteSpace(GlobalConfig.SystemPrompt) 
+                ? GlobalConfig.SystemPrompt 
+                : "你是一个全能智能 Agent，代号 PiPiClaw (皮皮虾)。你的使命：以本地优先、安全可审计的方式完成用户提出的任何任务，不限于运维/开发/数据/知识检索。你可随时通过 Skill-Hub 搜索或安装一万+ 生态技能扩展能力。";
+
             var systemPromptText = $"""
-                                    你是一个全能智能 Agent，代号 PiPiClaw (皮皮虾)。当前系统：{RuntimeInformation.OSDescription}。当前时间是 {DateTimeOffset.Now:yyyy-MM-ddTHH:mm:sszzz}。
+                                    {customPrompt}
+
+                                    【当前环境状态】
+                                    当前系统：{RuntimeInformation.OSDescription}。当前时间是 {DateTimeOffset.Now:yyyy-MM-ddTHH:mm:sszzz}。
                                     {sudoInstruction}
-                                    你的使命：以本地优先、安全可审计的方式完成用户提出的任何任务，不限于运维/开发/数据/知识检索。你可随时通过 Skill-Hub 搜索或安装一万+ 生态技能扩展能力。
+
                                     【记忆管理架构】：
                                     1. 为节省Token，你的短时记忆默认只保留最近几次的对话记录。
                                     2. 当任务彻底完成时调用 finish_task 清理环境。
@@ -498,7 +506,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                             }
                         case "remove_scheduled_task": result = RemoveScheduledTask(GetStrProp(tempArgs, "task_id")); break;
                         case "self_update": result = await SelfUpdate(); break;
-                        case "execute_command": result = RunCmd(GetStrProp(tempArgs, "command"), PushUpdate, GetBoolProp(tempArgs, "is_background"), taskCts.Token); break;
+                        case "execute_command": result = await RunCmd(GetStrProp(tempArgs, "command"), PushUpdate, GetBoolProp(tempArgs, "is_background"), taskCts.Token); break;
                         default:
                             result = fnName switch
                             {
@@ -731,7 +739,7 @@ string ReadPasswordHidden()
     Console.WriteLine();
     return pwd.ToString();
 }
-string RunCmd(string? cmd, Action<string, string>? pushUpdate, bool isBackground = false, CancellationToken ct = default)
+async Task<string> RunCmd(string? cmd, Action<string, string>? pushUpdate, bool isBackground = false, CancellationToken ct = default)
 {
     if (string.IsNullOrEmpty(cmd)) return "[执行失败] 命令为空";
     var isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -774,7 +782,7 @@ string RunCmd(string? cmd, Action<string, string>? pushUpdate, bool isBackground
     var consoleEncoding = new UTF8Encoding(false);
     if (isBackground)
     {
-        Task.Run(() =>
+        Task.Run(async () =>
         {
             using var p = new Process();
             p.StartInfo = new ProcessStartInfo(shellExe, shellArg)
@@ -789,7 +797,7 @@ string RunCmd(string? cmd, Action<string, string>? pushUpdate, bool isBackground
             if (!isWin && !string.IsNullOrEmpty(askPassPath)) p.StartInfo.EnvironmentVariables["SUDO_ASKPASS"] = askPassPath;
             p.OutputDataReceived += (sender, e) => { if (e.Data != null) Console.WriteLine($"[后台] {e.Data}"); };
             p.ErrorDataReceived += (sender, e) => { if (e.Data != null) { Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine($"[后台警告] {e.Data}"); Console.ResetColor(); } };
-            try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); p.WaitForExit(); }
+            try { p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine(); await p.WaitForExitAsync(ct); }
             catch { }
             finally { if (!string.IsNullOrEmpty(askPassPath) && File.Exists(askPassPath)) try { File.Delete(askPassPath); } catch { } }
         }, ct);
@@ -830,8 +838,13 @@ string RunCmd(string? cmd, Action<string, string>? pushUpdate, bool isBackground
         try
         {
             p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
-            using (ct.Register(() => { try { p.Kill(true); } catch { } }))
-                p.WaitForExit();
+            await using (ct.Register(() => { try { p.Kill(true); }
+                             catch
+                             {
+                                 // ignored
+                             }
+                         }))
+               await p.WaitForExitAsync(ct);
             if (ct.IsCancellationRequested) return CancelledMsg;
         }
         catch (Exception ex) { return $"[执行异常] {ex.Message}"; }
@@ -2414,6 +2427,10 @@ string GetWebUIHtml()
                             <label>Web 端口 (WebPort)</label>
                             <input type="number" id="webPort" placeholder="5050" min="1" max="65535" />
                         </div>
+                        <div style="margin-top: 15px;grid-column: span 2;">
+                            <label>自定义系统提示词 (System Prompt)</label>
+                            <textarea id="systemPrompt" placeholder="留空则使用默认人设。例如：你是一个二次元猫娘程序员..." style="width: 100%; min-height: 80px;"></textarea>
+                        </div>
                     </div>
                 </div>
                 <button class="btn-submit" type="button" onclick="saveConfig()">保存并上传配置</button>
@@ -2605,6 +2622,7 @@ string GetWebUIHtml()
                 const data = await res.json();
                 document.getElementById('sudoPassword').value = data.SudoPassword || '';
                 document.getElementById('webPort').value = data.WebPort || 5050;
+                document.getElementById('systemPrompt').value = data.SystemPrompt || '';
                 renderModelConfigUI(data.Models);
                 renderUrlConfigUI(data.SkillHubDownloadUrls);
             } catch { }
@@ -2627,7 +2645,8 @@ string GetWebUIHtml()
                 Models: modelsData,
                 SudoPassword: document.getElementById('sudoPassword').value,
                 WebPort: portVal,
-                SkillHubDownloadUrls: urlsData
+                SkillHubDownloadUrls: urlsData,
+                SystemPrompt: document.getElementById('systemPrompt').value
             };
             const btn = document.querySelector('.btn-submit');
             const originalText = btn ? btn.innerHTML : '';
@@ -3095,7 +3114,7 @@ public class AppConfig
     [JsonPropertyName("SudoPassword")] public string SudoPassword { get; set; } = "";
     [JsonPropertyName("WebPort")] public int WebPort { get; set; } = 5050;
     [JsonPropertyName("SkillHubSearchUrl")] public string SkillHubSearchUrl { get; set; } = "http://lb-3zbg86f6-0gwe3n7q8t4sv2za.clb.gz-tencentclb.com/api/v1/search";
-
+    [JsonPropertyName("SystemPrompt")] public string SystemPrompt { get; set; } = "";
     [JsonPropertyName("SkillHubDownloadUrls")]
     public List<string> SkillHubDownloadUrls { get; set; } = ["https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/skills/{slug}.zip", "https://wry-manatee-359.convex.site/api/v1/download?slug={slug}"];
 }
