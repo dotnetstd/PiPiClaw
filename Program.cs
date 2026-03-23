@@ -119,9 +119,24 @@ if (File.Exists(checkpointPath))
     try
     {
         var savedState = JsonSerializer.Deserialize(File.ReadAllText(checkpointPath, Encoding.UTF8), AppJsonContext.Default.ListChatMessage);
-        if (savedState != null) fullHistory = savedState;
+        if (savedState != null)
+        {
+            fullHistory = savedState;
+
+            // 【核心修复】检测并清理上一次因为卡死强退导致的历史污染
+            var lastMsg = fullHistory.LastOrDefault();
+            if (lastMsg != null && lastMsg.Role == "assistant" && lastMsg.ToolCalls != null && lastMsg.ToolCalls.Count > 0)
+            {
+                // 如果最后一条是工具调用，且没有结果，说明程序在这里被异常中断了
+                lastMsg.ToolCalls = null; // 剥离工具调用，防止 400 报错
+                if (string.IsNullOrEmpty(lastMsg.Content))
+                {
+                    lastMsg.Content = "[系统提示：该任务在上次运行中因进程卡死或被强杀而异常中断]";
+                }
+            }
+        }
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("\n[PiPiClaw] 发现上次未完成的任务存档，已自动恢复！\n");
+        Console.WriteLine("\n[PiPiClaw] 发现上次未完成的任务存档，已自动恢复上下文！\n");
         Console.ResetColor();
     }
     catch { File.Delete(checkpointPath); }
@@ -481,7 +496,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                             }
                         case "remove_scheduled_task": result = RemoveScheduledTask(GetStrProp(tempArgs, "task_id")); break;
                         case "self_update": result = await SelfUpdate(); break;
-                        case "execute_command": result = RunCmd(GetStrProp(tempArgs, "command"), GetBoolProp(tempArgs, "is_background"), taskCts.Token); break;
+                        case "execute_command": result = RunCmd(GetStrProp(tempArgs, "command"), onUpdate, GetBoolProp(tempArgs, "is_background"), taskCts.Token); break;
                         default:
                             result = fnName switch
                             {
@@ -493,7 +508,10 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                             };
                             break;
                     }
-                    onUpdate?.Invoke("tool_result", result);
+                    if (fnName != "execute_command")
+                    {
+                        onUpdate?.Invoke("tool_result", result);
+                    }
                     var toolResultMsg = new ChatMessage
                     {
                         Role = "tool",
@@ -710,7 +728,7 @@ string ReadPasswordHidden()
     Console.WriteLine();
     return pwd.ToString();
 }
-string RunCmd(string? cmd, bool isBackground = false, CancellationToken ct = default)
+string RunCmd(string? cmd, Action<string, string>? onUpdate, bool isBackground = false, CancellationToken ct = default)
 {
     if (string.IsNullOrEmpty(cmd)) return "[执行失败] 命令为空";
     var isWin = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -790,8 +808,22 @@ string RunCmd(string? cmd, bool isBackground = false, CancellationToken ct = def
         if (!isWin && !string.IsNullOrEmpty(askPassPath)) p.StartInfo.EnvironmentVariables["SUDO_ASKPASS"] = askPassPath;
         var outputBuilder = new StringBuilder();
         var errorBuilder = new StringBuilder();
-        p.OutputDataReceived += (sender, e) => { if (e.Data == null) return; Console.WriteLine(e.Data); outputBuilder.AppendLine(e.Data); };
-        p.ErrorDataReceived += (sender, e) => { if (e.Data == null) return; Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(e.Data); Console.ResetColor(); errorBuilder.AppendLine(e.Data); };
+        p.OutputDataReceived += (sender, e) =>
+        {
+            if (e.Data == null) return;
+            Console.WriteLine(e.Data);
+            outputBuilder.AppendLine(e.Data);
+            onUpdate?.Invoke("tool_result", e.Data);
+        };
+        p.ErrorDataReceived += (sender, e) =>
+        {
+            if (e.Data == null) return;
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.WriteLine(e.Data);
+            Console.ResetColor();
+            errorBuilder.AppendLine(e.Data);
+            onUpdate?.Invoke("tool_result", e.Data);
+        };
         try
         {
             p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
@@ -1155,7 +1187,22 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
                 await res.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"status\":\"cancelled\"}"));
                 break;
 
-            // --- 核心聊天接口 (支持多人排队) ---
+            case "/api/clear" when req.HttpMethod == "POST":
+                fullHistory.Clear();
+                try
+                {
+                    var fullPath = Path.Combine(AppContext.BaseDirectory, checkpointPath);
+                    if (File.Exists(fullPath)) File.Delete(fullPath);
+                }
+                catch { }
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("\n✅ [生命周期] 用户已手动清理上下文！PiPiClaw 已就绪。");
+                Console.ResetColor();
+
+                res.ContentType = "application/json";
+                await res.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"status\":\"cleared\"}"));
+                break;
+
             case "/api/chat":
                 using (var reader = new StreamReader(req.InputStream, req.ContentEncoding))
                 {
@@ -2169,6 +2216,7 @@ string GetWebUIHtml()
         <div class="header">
             <button type="button" class="header-btn collapse-toggle" id="configToggle" onclick="toggleConfig()"
                 aria-expanded="false" title="展开/收起设置">⚙</button>
+                <button type="button" class="header-btn" onclick="clearContext()" title="手动清理上下文记忆">🧹</button>
             <h1>
                 <img class="logo-mark" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="PiPiClaw Logo" />
                 <span>PiPiClaw</span>
@@ -2418,7 +2466,7 @@ string GetWebUIHtml()
         function renderUrlConfigUI(urls) {
             const container = document.getElementById('urlsConfigContainer');
             container.innerHTML = '';
-            if (!urls || urls.length === 0) urls = ["https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/skills/{slug}.zip"];
+            if (!urls || urls.length === 0) urls = ["https://wry-manatee-359.convex.site/api/v1/download?slug={slug}"];
             urls.forEach((u, i) => {
                 container.insertAdjacentHTML('beforeend', `
                     <div class="config-model-item" style="padding: 10px 15px; margin-bottom: 10px;">
@@ -2462,7 +2510,7 @@ string GetWebUIHtml()
             let urlsData = getUrlsFromUI().filter(u => u !== "");
             if (urlsData.length === 0) {
                 // 如果全部删空了，给个保底地址防止崩溃
-                urlsData = ["https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/skills/{slug}.zip"];
+                urlsData = ["https://wry-manatee-359.convex.site/api/v1/download?slug={slug}"];
             }
             const cfg = {
                 Models: modelsData,
@@ -2600,6 +2648,28 @@ string GetWebUIHtml()
             if (input) {
                 input.disabled = busy;
                 if (busy) input.blur();
+            }
+        }
+        async function clearContext() {
+            if (!confirm('确定要彻底清空当前的上下文记忆吗？')) return;
+            try {
+                const res = await fetch('/api/clear', { method: 'POST' });
+                if (res.ok) {
+                    const chatBox = document.getElementById('chatBox');
+                    // 清空面板并显示提示
+                    chatBox.innerHTML = `
+                    <div class="msg ai">
+                        <div class="msg-header">皮皮虾 // 系统</div>
+                        <div class="msg-content">
+                            <div style="color:var(--pipi-magenta); font-weight:bold;">
+                            ✨ 历史上下文与文件记录已手动清空！随时可以开始新任务。
+                            </div>
+                        </div>
+                    </div>`;
+                }
+            } catch (e) {
+                console.warn('[clearContext] failed:', e);
+                alert('清理失败，请检查网络或控制台。');
             }
         }
         async function cancelTask() {
