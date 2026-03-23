@@ -1389,8 +1389,8 @@ string GetWebUIHtml()
             --sb-thumb-hover: rgba(90, 200, 250, .65);
         }
         [data-theme="light"] {
-            --bg-depth: #e9edf5;
-            --bg-mid: #e2e8f0;
+            --bg-depth: #abe2b5;
+            --bg-mid: #bed6f5;
             --bg-card: rgba(255, 255, 255, .9);
             --pipi-magenta: #418dde;
             --pipi-cyan: #4a90e2;
@@ -1421,26 +1421,17 @@ string GetWebUIHtml()
             --sb-thumb: rgba(74, 144, 226, .4);
             --sb-thumb-hover: rgba(74, 144, 226, .65);
         }
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: var(--sb-track);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--sb-thumb);
-            border-radius: 4px;
-            transition: background 0.3s ease;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--sb-thumb-hover);
-        }
-        * {
-            scrollbar-width: thin;
-            scrollbar-color: var(--sb-thumb) var(--sb-track);
-        }
+::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+}
+
+* {
+    scrollbar-width: none; 
+    -ms-overflow-style: none; 
+}
         html {
             background-color: var(--bg-depth);
             transition: background-color 0.4s ease;
@@ -1730,21 +1721,19 @@ string GetWebUIHtml()
             flex-direction: column;
             min-height: 0;
         }
+            &::-webkit-scrollbar {
+                display: none;
+            }
         .chat-box {
+
             flex: 1;
             min-height: 0;
             overflow-y: auto;
-            background: var(--chat-box-bg);
-            padding: 18px;
-            border: 1px solid var(--chat-box-border);
-            border-radius: 16px;
+            padding: 5px;
             display: flex;
             flex-direction: column;
             gap: 18px;
             scroll-behavior: smooth;
-            box-shadow:
-                inset 0 1px 0 rgba(255, 255, 255, .08),
-                0 18px 32px var(--shadow-color);
             transition: background 0.4s, border-color 0.4s, box-shadow 0.4s;
         }
         .msg {
@@ -2247,6 +2236,45 @@ string GetWebUIHtml()
             .btn-tasks { font-size: 0.7em; height: 26px; }
             .btn-wrapper { min-height: 46px; }
         }
+
+
+.footer-attribution {
+    text-align: center;
+    font-size: 0.75em;
+    color: var(--text-muted);
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--glass-stroke);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    opacity: 0.6;
+    transition: opacity 0.3s ease;
+    letter-spacing: 0.5px;
+}
+.footer-attribution:hover {
+    opacity: 1;
+}
+.footer-attribution strong {
+    color: var(--pipi-cyan);
+    font-weight: 600;
+}
+.footer-attribution a {
+    color: var(--text-main);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    transition: color 0.3s, text-shadow 0.3s, transform 0.2s;
+}
+.footer-attribution a:hover {
+    color: var(--pipi-magenta);
+    text-shadow: 0 0 10px rgba(167, 139, 250, 0.4);
+    transform: translateY(-1px);
+}
+.footer-attribution .divider {
+    color: var(--glass-stroke);
+}
     </style>
 </head>
 <body>
@@ -2310,6 +2338,17 @@ string GetWebUIHtml()
                     </div>
                 </div>
             </div>
+            <div class="footer-attribution">
+                <span>Made with 🧋 by <strong>奶茶叔叔</strong></span>
+                <span class="divider">/</span>
+                <a href="https://github.com/anan1213095357/PiPiClaw" target="_blank" title="前往 GitHub 查看源码">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" style="vertical-align: middle; margin-right: 5px;"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z"></path></svg>
+                    PiPiClaw 开放源代码
+                </a>
+            </div>
+            </div> </div>
+
+
         </div>
     </div>
     <div class="modal" id="tasksModal" aria-hidden="true" role="dialog" aria-labelledby="tasksTitle">
