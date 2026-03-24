@@ -1349,7 +1349,7 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
                             }
                         }
                     }
-                    string statusJson = $"{{\"isWorking\":{isBusy.ToString().ToLower()}, \"currentAction\":{JsonSerializer.Serialize(actionStr)}}}";
+                    string statusJson = $"{{\"isWorking\":{isBusy.ToString().ToLower()}, \"currentAction\":{JsonSerializer.Serialize(actionStr, AppJsonContext.Default.String)}}}";
                     res.ContentType = "application/json; charset=utf-8";
                     await res.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(statusJson));
                     break;
@@ -3624,6 +3624,7 @@ public class PushMsg
     [JsonPropertyName("type")] public string Type { get; set; } = "";
     [JsonPropertyName("content")] public string Content { get; set; } = "";
 }
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(AppConfig))]
 [JsonSerializable(typeof(List<TaskItem>))]
