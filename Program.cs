@@ -522,6 +522,16 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             if (msg == null) break;
             SafeAddHistory(msg);
             var toolCalls = msg.ToolCalls;
+
+            string thinkText = msg.ReasoningContent ?? msg.Content ?? "";
+            if (!string.IsNullOrWhiteSpace(thinkText) && toolCalls != null && toolCalls.Count > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkMagenta;
+                Console.WriteLine($"\n[思考过程] {thinkText}");
+                Console.ResetColor();
+                PushUpdate?.Invoke("thinking", thinkText); // 下发给前端
+            }
+
             if (toolCalls != null && toolCalls.Count > 0)
             {
                 foreach (var call in toolCalls)
@@ -547,11 +557,11 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                     Console.ForegroundColor = ConsoleColor.DarkCyan;
                     switch (fnName)
                     {
-                        case "execute_command": actionDesc = $"执行命令: {GetStrProp(tempArgs, "command")} (后台: {GetBoolProp(tempArgs, "is_background")})"; Console.WriteLine($"[Action] {actionDesc}"); break;
-                        case "read_file": actionDesc = $"正在读取文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
-                        case "write_file": actionDesc = $"正在写入文件: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
-                        case "search_content": actionDesc = $"全局搜索关键字: {GetStrProp(tempArgs, "keyword")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
-                        case "delegate_task": actionDesc = $"正在跟同事对接: {GetStrProp(tempArgs, "user_name")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "execute_command": actionDesc = $"执行: {GetStrProp(tempArgs, "command")} (is_background: {GetBoolProp(tempArgs, "is_background")})"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "read_file": actionDesc = $"读取: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "write_file": actionDesc = $"写入: {GetStrProp(tempArgs, "file_path")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "search_content": actionDesc = $"搜索: {GetStrProp(tempArgs, "keyword")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
+                        case "delegate_task": actionDesc = $"找同事: {GetStrProp(tempArgs, "user_name")}"; Console.WriteLine($"[Action] {actionDesc}"); break;
                         default: actionDesc = $"调用参数: {argsString}"; break;
                     }
                     Console.ResetColor();
@@ -1396,33 +1406,52 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
                     }
                     if (isBusy)
                     {
-                        actionStr = "🤔 正在分析决策中..."; // LLM 请求中默认展示思考状态
                         if (userLiveStream.TryGetValue(activeKey, out var stream))
                         {
+                            PushMsg? lastThink = null;
                             PushMsg? lastTool = null;
                             lock (stream)
                             {
+                                lastThink = stream.LastOrDefault(m => m.Type == "thinking");
                                 lastTool = stream.LastOrDefault(m => m.Type == "tool");
                             }
+
+                            // 本地函数：去除换行并控制长度，防止撑爆气泡
+                            string TruncateStr(string s, int max)
+                            {
+                                if (string.IsNullOrEmpty(s)) return s;
+                                var flat = s.Replace("\r", "").Replace("\n", " ");
+                                return flat.Length > max ? flat.Substring(0, max) + "..." : flat;
+                            }
+
+                            var actionLines = new List<string>();
+
+                            // 第一行：思考过程
+                            if (lastThink != null)
+                                actionLines.Add($"🤔 思考: {TruncateStr(lastThink.Content, 20)}");
+                            else
+                                actionLines.Add($"🤔 正在分析决策中...");
+
+                            // 第二/三行：调用的工具和参数
                             if (lastTool != null)
                             {
                                 var lines = lastTool.Content.Split('\n');
                                 if (lines.Length > 1)
                                 {
-                                    var toolName = lines[0].Replace("[调用工具]", "").Trim();
-                                    var desc = lines[1].Trim();
-                                    if (desc.Length > 40)
-                                    {
-                                        desc = desc.Substring(0, 40) + "...";
-                                    }
-                                    // 使用换行符把命令名和参数拼接起来
-                                    actionStr = $"{toolName}\n{desc}";
+                                    actionLines.Add($"🔧 工具: {TruncateStr(lines[0].Replace("[调用工具]", "").Trim(), 20)}");
+                                    actionLines.Add($"⚡ 执行: {TruncateStr(lines[1].Trim(), 20)}");
                                 }
                                 else
                                 {
-                                    actionStr = lines[0].Replace("[调用工具]", "").Trim();
+                                    actionLines.Add($"🔧 工具: {TruncateStr(lines[0].Replace("[调用工具]", "").Trim(), 20)}");
                                 }
                             }
+
+                            actionStr = string.Join("\n", actionLines);
+                        }
+                        else
+                        {
+                            actionStr = "🤔 正在分析决策中...";
                         }
                     }
                     string statusJson = $"{{\"isWorking\":{isBusy.ToString().ToLower()}, \"currentAction\":{JsonSerializer.Serialize(actionStr, AppJsonContext.Default.String)}}}";
@@ -3353,6 +3382,17 @@ async function processStream(response, contentBoxId) {
                         currentTerminalBox = null;
                         continue;
                     }
+                    if (data.type === 'thinking') {
+                        currentTerminalBox = contentBox.querySelector('.exec-terminal');
+                        if (!currentTerminalBox) {
+                            currentTerminalBox = document.createElement('div');
+                            currentTerminalBox.className = 'exec-terminal';
+                            contentBox.appendChild(currentTerminalBox);
+                        }
+                        currentTerminalBox.insertAdjacentHTML('beforeend', `<span class="log-action" style="color:var(--pipi-magenta); opacity:0.8; font-style:italic;">[思考] ${escapeHtml(data.content)}</span>`);
+                        currentTerminalBox.scrollTop = currentTerminalBox.scrollHeight;
+                        continue;
+                    }
                     if (data.type === 'tool' || data.type === 'tool_result') {
                         currentTerminalBox = contentBox.querySelector('.exec-terminal');
                         if (!currentTerminalBox) {
@@ -3525,6 +3565,14 @@ function confirmUsername() {
                                 currentTerminalBox = document.createElement('div');
                                 currentTerminalBox.className = 'exec-terminal';
                                 currentAiContentBox.appendChild(currentTerminalBox);
+                            }
+                            const thinkText = msg.reasoning_content || msg.content || msg.ReasoningContent || msg.Content || "";
+                            if (thinkText) {
+                                const thinkSpan = document.createElement('span');
+                                thinkSpan.className = 'log-action';
+                                thinkSpan.style.cssText = 'color:var(--pipi-magenta); opacity:0.8; font-style:italic;';
+                                thinkSpan.textContent = `[思考] ${thinkText}`;
+                                currentTerminalBox.appendChild(thinkSpan);
                             }
                             for (const tc of msg.tool_calls) {
                                 const actionSpan = document.createElement('span');
