@@ -350,7 +350,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
         while (!isDone)
         {
             using var cts = new CancellationTokenSource();
-            var animTask = Think(cts.Token);
+            var animTask = Think(username,cts.Token);
             var currentTasksJson = "暂无定时任务";
             if (File.Exists(tasksPath))
             {
@@ -424,28 +424,68 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
                 EnableSearch = true
             };
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", activeApiKey);
-            var content = new StringContent(JsonSerializer.Serialize(payload, AppJsonContext.Default.LlmRequest), Encoding.UTF8, "application/json");
-            HttpResponseMessage res;
-            string responseString;
-            try
+            string responseString = "";
+            bool isSuccess = false;
+            Exception? lastEx = null;
+            int maxRetries = 3; // 设置最大重试次数
+
+            for (int retry = 0; retry < maxRetries; retry++)
             {
-                res = await client.PostAsync(activeEndpoint, content, taskCts.Token);
-                res.EnsureSuccessStatusCode();
-                responseString = await res.Content.ReadAsStringAsync(taskCts.Token);
+                try
+                {
+                    // 注意：每次重试需要重新生成 StringContent，避免流被重复读取导致报错
+                    var content = new StringContent(JsonSerializer.Serialize(payload, AppJsonContext.Default.LlmRequest), Encoding.UTF8, "application/json");
+                    var res = await client.PostAsync(activeEndpoint, content, taskCts.Token);
+
+                    if (res.IsSuccessStatusCode)
+                    {
+                        responseString = await res.Content.ReadAsStringAsync(taskCts.Token);
+                        isSuccess = true;
+                        break; // 请求成功，跳出重试循环
+                    }
+
+                    int statusCode = (int)res.StatusCode;
+                    // 如果网关返回 5xx 错误，手动抛出异常以触发重试
+                    if (statusCode >= 500 && statusCode < 600)
+                    {
+                        throw new Exception($"网关返回 5xx 错误码 ({statusCode})");
+                    }
+                    else
+                    {
+                        // 4xx 级别的错误（如鉴权失败、参数错误等）通常没有重试的必要，直接抛出
+                        res.EnsureSuccessStatusCode();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    cts.Cancel(); await animTask;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine(CancelledMsg); Console.ResetColor();
+                    PushUpdate?.Invoke("final", CancelledMsg);
+                    return CancelledMsg;
+                }
+                catch (Exception ex)
+                {
+                    lastEx = ex;
+                    if (retry < maxRetries - 1)
+                    {
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.WriteLine($"\n[网络抖动] {ex.Message}，正在进行第 {retry + 1} 次重试...");
+                        Console.ResetColor();
+                        PushUpdate?.Invoke("tool_result", $"[网络抖动] 请求网关失败，准备第 {retry + 1} 次重试...");
+
+                        // 延时 2 秒后进行下一次重试，给网关恢复的时间
+                        await Task.Delay(2000, taskCts.Token);
+                    }
+                }
             }
-            catch (OperationCanceledException)
-            {
-                cts.Cancel(); await animTask;
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine(CancelledMsg); Console.ResetColor();
-                PushUpdate?.Invoke("final", CancelledMsg);
-                return CancelledMsg;
-            }
-            catch (Exception ex)
+
+            // 如果用尽了重试次数依然失败，则执行原来的失败报错逻辑
+            if (!isSuccess)
             {
                 cts.Cancel(); await animTask;
                 Console.ForegroundColor = ConsoleColor.Red;
-                var err = $"\n[网络错误] 请求 API 失败: {ex.Message}";
+                var err = $"\n[网络错误] 请求 API 失败(已达最大重试次数 {maxRetries}): {lastEx?.Message}";
                 Console.WriteLine(err); Console.ResetColor();
                 PushUpdate?.Invoke("final", err);
                 return err;
@@ -729,12 +769,12 @@ string GetInstalledSkillsContext()
     return sb.Length > 0 ? sb.ToString() : "当前未安装任何技能";
 }
 
-async Task Think(CancellationToken ct)
+async Task Think(string username, CancellationToken ct)
 {
     Console.ForegroundColor = ConsoleColor.Cyan;
     for (int i = 0; !ct.IsCancellationRequested; i++)
     {
-        Console.Write($"\r {"-\\|/"[i % 4]} 皮皮虾正在思考中...");
+        Console.Write($"\r {"-\\|/"[i % 4]} {username}皮皮虾正在思考中...");
         try { await Task.Delay(100, ct); } catch { }
     }
     Console.Write("\r".PadRight(30) + "\r");
@@ -959,7 +999,7 @@ string WriteFile(string? path, string? content, string? oldContent = null)
             var normalizedCurrent = currentText.Replace("\r\n", "\n");
             var normalizedOld = oldContent.Replace("\r\n", "\n");
             var normalizedNew = content?.Replace("\r\n", "\n") ?? "";
-            if (!normalizedCurrent.Contains(normalizedOld)) 
+            if (!normalizedCurrent.Contains(normalizedOld))
                 return "[修改失败] 未精准匹配到 old_content，请确认内容。如果你不确定，请先 read_file 查看完整内容。";
             var finalContent = normalizedCurrent.Replace(normalizedOld, normalizedNew);
             File.WriteAllText(path, finalContent.Replace("\n", Environment.NewLine), targetEncoding);
