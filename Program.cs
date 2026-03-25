@@ -1323,7 +1323,7 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
                     string actionStr = "摸鱼中...";
                     string activeKey = username;
 
-                    if (userLocks.TryGetValue(username, out var lck) && lck.CurrentCount == 0)
+                    if (userLocks.TryGetValue(username, out var lck) && lck.CurrentCount < 100)
                     {
                         isBusy = true;
                     }
@@ -1378,7 +1378,7 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
 
             case "/api/attach" when req.HttpMethod == "POST":
                 {
-                    bool isBusy = userLocks.TryGetValue(username, out var lck) && lck.CurrentCount == 0;
+                    bool isBusy = userLocks.TryGetValue(username, out var lck) && lck.CurrentCount < 100;
                     if (!isBusy)
                     {
                         res.ContentType = "application/json";
@@ -1407,10 +1407,10 @@ async Task HandleRequestAsync(HttpListenerContext context, int webPort)
                     }
 
                     // 保持连接不断开，直到任务彻底执行完毕释放锁
-                    while (userLocks.TryGetValue(username, out var lck2) && lck2.CurrentCount == 0)
+                    while (userLocks.TryGetValue(username, out var lck2) && lck2.CurrentCount < 100)
                     {
                         await Task.Delay(1000);
-                        try { attachWriter.Write(" "); } catch { break; } // 用空格保活
+                        try { attachWriter.Write(" "); } catch { break; }
                     }
                     userConnections.TryRemove(username, out _);
                     break;
