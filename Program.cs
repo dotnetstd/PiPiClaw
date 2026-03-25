@@ -427,7 +427,7 @@ async Task<string> RunAgent(string inputMessage, bool isScheduledEvent = false, 
             string responseString = "";
             bool isSuccess = false;
             Exception? lastEx = null;
-            int maxRetries = 3; // 设置最大重试次数
+            int maxRetries = 30;
 
             for (int retry = 0; retry < maxRetries; retry++)
             {
